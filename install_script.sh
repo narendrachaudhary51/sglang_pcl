@@ -9,9 +9,9 @@ cd python
 rm -rf build/ sglang_cpu.egg-info/
 cp pyproject_cpu.toml pyproject.toml
 uv pip install --upgrade pip setuptools
-uv pip install -e .
+uv pip install .
 
 # Build the CPU backend kernels
 cd ../sgl-kernel
 cp pyproject_cpu.toml pyproject.toml
-uv pip install -e .
+uv pip install .
