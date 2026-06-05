@@ -150,6 +150,40 @@ _is_shuffle_moe_mxfp4 = is_gfx95_supported()
 _is_cpu_amx_available = cpu_has_amx_support()
 _sm120_mxfp4_min_warps_patched = False
 
+# Block-N tile width used by the CPU MXFP4 GEMM kernels
+# (= block_size_n() = 2 * TILE_N = 32, see sgl-kernel/csrc/cpu/gemm.h).
+_MXFP4_CPU_BLOCK_N = 32
+
+# When the libxsmm MXFP4 x BF16 CPU backend is enabled (SGLANG_CPU_MXFP4_LIBXSMM=1,
+# the same toggle the C++ kernel reads via sgl_mxfp4_libxsmm::enabled()), the
+# expert weights must be stored in standard MXFP4-VNNI2 layout -- the layout
+# libxsmm consumes -- instead of the sgl-kernel-native 32-way nibble interleave
+# produced by convert_weight_packed.
+_mxfp4_cpu_use_libxsmm = os.environ.get("SGLANG_CPU_MXFP4_LIBXSMM", "0") == "1"
+
+
+def _reshuffle_mxfp4_packed_to_libxsmm_vnni2(packed_w, num_row_blocks, contraction):
+    """Re-shuffle a packed MXFP4 weight (the output of convert_weight_packed, laid
+    out as ``[.., R / BLOCK_N, K / 2, BLOCK_N]`` bytes) into the standard
+    MXFP4-VNNI2 layout that libxsmm expects. Runs ONCE at load time, never on the
+    inference critical path.
+
+    ``num_row_blocks`` = (num_experts * output_rows) / BLOCK_N and
+    ``contraction`` = K (the per-row hidden dim, before 4-bit packing). The
+    per-BLOCK_N-tile nibble shuffle mirrors
+    bench_mxfp4_moe.reshuffle_moe_vnni2 / bench_mxfp4_gemm.sglang_to_libxsmm_vnni2
+    so the production load path packs weights identically to the benchmarks.
+    """
+    bn = _MXFP4_CPU_BLOCK_N
+    k2 = contraction // 2
+    buf = packed_w.contiguous().view(torch.uint8).reshape(num_row_blocks, k2, bn)
+    out = torch.empty_like(buf)
+    even = buf[:, :, 0::2]  # low/high nibbles of even-K columns
+    odd = buf[:, :, 1::2]  # low/high nibbles of odd-K columns
+    out[:, :, 0:16] = ((odd & 0x0F) << 4) | (even & 0x0F)
+    out[:, :, 16:32] = (odd & 0xF0) | (even >> 4)
+    return out.reshape(packed_w.shape)
+
 if _is_hip:
     # import aiter
     try:
@@ -883,6 +917,15 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
             del layer.w13_weight
             del layer.w2_weight
         elif _is_cpu and _is_cpu_amx_available:
+            # Capture the logical (experts, output_rows, contraction) dims of the
+            # MXFP4-packed expert weights *before* convert_weight_packed repacks
+            # them, so we can re-shuffle to libxsmm VNNI2 afterwards. The stored
+            # last dim is contraction / 2 (two 4-bit values per byte).
+            if _mxfp4_cpu_use_libxsmm:
+                e13, r13 = layer.w13_weight.shape[0], layer.w13_weight.shape[1]
+                k13 = layer.w13_weight.shape[2] * 2
+                e2, r2 = layer.w2_weight.shape[0], layer.w2_weight.shape[1]
+                k2 = layer.w2_weight.shape[2] * 2
             _amx_process_weight_after_loading(layer, ["w13_weight", "w2_weight"])
             if use_intel_amx_backend(layer):
                 packed_w13_weight_scale = torch.ops.sgl_kernel.convert_scale_packed(
@@ -897,6 +940,23 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 layer.w2_weight_scale = Parameter(
                     packed_w2_weight_scale, requires_grad=False
                 )
+                if _mxfp4_cpu_use_libxsmm:
+                    # Re-shuffle the packed expert weights from sgl-kernel-native
+                    # to standard MXFP4-VNNI2 so the libxsmm GEMM path reads them
+                    # correctly. Preserve the parameter __dict__ (weight attrs).
+                    for name, num_row_blocks, contraction in (
+                        ("w13_weight", e13 * r13 // _MXFP4_CPU_BLOCK_N, k13),
+                        ("w2_weight", e2 * r2 // _MXFP4_CPU_BLOCK_N, k2),
+                    ):
+                        old = getattr(layer, name)
+                        new = Parameter(
+                            _reshuffle_mxfp4_packed_to_libxsmm_vnni2(
+                                old, num_row_blocks, contraction
+                            ),
+                            requires_grad=False,
+                        )
+                        new.__dict__ = old.__dict__
+                        setattr(layer, name, new)
                 if hasattr(layer, "w13_weight_bias"):
                     layer.w13_weight_bias = Parameter(
                         layer.w13_weight_bias.float(), requires_grad=False

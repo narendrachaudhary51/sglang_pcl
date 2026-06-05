@@ -1,6 +1,27 @@
 #include "common.h"
 #include "gemm.h"
 #include "moe.h"
+#include "mxfp4_libxsmm_brgemm.h"
+
+namespace {
+// Collect the distinct per-block token counts (m_size = offsets[mb+1] -
+// offsets[mb]) so the libxsmm kernels for exactly those M tile sizes can be
+// pre-compiled before the parallel region. m_size is bounded by BLOCK_M, so a
+// fixed-size presence table suffices.
+inline int collect_moe_m_sizes(const int32_t* offsets, int64_t MB, int* out /* size BLOCK_M+1 */) {
+  constexpr int BLOCK_M = block_size_m();
+  bool seen[BLOCK_M + 1] = {false};
+  int num = 0;
+  for (int64_t mb = 0; mb < MB; ++mb) {
+    int m = static_cast<int>(offsets[mb + 1] - offsets[mb]);
+    if (m > 0 && m <= BLOCK_M && !seen[m]) {
+      seen[m] = true;
+      out[num++] = m;
+    }
+  }
+  return num;
+}
+}  // anonymous namespace
 
 template <typename scalar_t, typename packed_t, typename param_t, bool is_mxfp4>
 void fused_experts_fp_kernel_impl(
@@ -56,9 +77,40 @@ void fused_experts_fp_kernel_impl(
   const int64_t stride_n = packed_K;
 
   int64_t avg_M = std::max(int64_t(1), M * topk / E);
-  const bool use_brgemm = can_use_brgemm<packed_t>(avg_M);
+  bool use_brgemm = can_use_brgemm<packed_t>(avg_M);
+
+  // When the libxsmm MXFP4 backend is enabled, the expert weights are stored in
+  // standard MXFP4-VNNI2 layout (re-shuffled at load time, see Mxfp4MoEMethod.
+  // process_weights_after_loading). The default heuristic routes small per-expert
+  // token counts (avg_M <= 4) to the AVX512 micro-kernel, which expects the
+  // sgl-kernel-native nibble layout and would mis-read the VNNI2 weights. So
+  // whenever libxsmm is enabled small-M MUST also route through libxsmm for
+  // correctness -- this is not optional and not tied to the small-M A/B knob.
+  if constexpr (is_mxfp4) {
+    if (!use_brgemm && sgl_mxfp4_libxsmm::enabled()) {
+      use_brgemm = true;
+    }
+  }
 
   int64_t B_tmp_size_per_thread = MAX_CACHE_BLOCK_SIZE * BLOCK_N * std::max(K, N);
+
+  // Pre-compile the libxsmm MXFP4 GEMM kernels for stage-1 (ic0 = A @ w1) for
+  // every distinct (m_size, n_size=BLOCK_N) tile BEFORE the parallel region;
+  // libxsmm JIT is unsafe concurrent with kernel execution on other threads.
+  if constexpr (is_mxfp4) {
+    if (use_brgemm && sgl_mxfp4_libxsmm::enabled()) {
+      int m_sizes[block_size_m() + 1];
+      int num_m = collect_moe_m_sizes(offsets, MB, m_sizes);
+      // Stage-1 writes each tile straight into ic0 (row stride 2 * N). When the
+      // activation is bf16 and there is no bias, prewarm the bf16-direct kernel
+      // (ldc == 2 * N) so libxsmm stores bf16 directly and we skip the F32 Ctmp
+      // scratch + convert epilogue; otherwise prewarm the F32-scratch variant.
+      const bool bf16_out =
+          std::is_same_v<scalar_t, at::BFloat16> && !with_bias && sgl_mxfp4_libxsmm::cfg_bf16_out();
+      sgl_mxfp4_libxsmm::prewarm_mxfp4(
+          m_sizes, num_m, /* N */ 2 * N, /* K */ K, /* lda */ K, /* c_bf16 */ bf16_out, /* ldc */ (int)(2 * N));
+    }
+  }
 
   // here we only parallel on half of 2N to fuse silu_and_mul with gemm
   parallel_2d(MB, NB, [&](int64_t mb0, int64_t mb1, int64_t nb0, int64_t nb1) {
@@ -114,6 +166,9 @@ void fused_experts_fp_kernel_impl(
     if (use_brgemm) {
       at::native::cpublas::brgemm_release();
     }
+    if constexpr (is_mxfp4) {
+      sgl_mxfp4_libxsmm::region_end();
+    }
   });
 
   // stage 1.5: intermediate_cache1 = silu(intermediate_cache0)
@@ -142,6 +197,21 @@ void fused_experts_fp_kernel_impl(
   const int64_t packed_IC = get_row_size<packed_t>(IC);
   const int64_t stride_e2 = OC * packed_IC;
   const int64_t stride_oc = packed_IC;
+
+  // Pre-compile the libxsmm MXFP4 GEMM kernels for stage-2 (ic2 = ic1 @ w2).
+  if constexpr (is_mxfp4) {
+    if (use_brgemm && sgl_mxfp4_libxsmm::enabled()) {
+      int m_sizes[block_size_m() + 1];
+      int num_m = collect_moe_m_sizes(offsets, MB2, m_sizes);
+      // Stage-2 writes each tile to a BLOCK_N-wide stack buffer (ldc == BLOCK_N)
+      // before the weighted scatter into ic2, so the bf16-direct kernel uses
+      // ldc == BLOCK_N (skips the F32 Ctmp -> C copy). Same bf16/no-bias guard.
+      const bool bf16_out =
+          std::is_same_v<scalar_t, at::BFloat16> && !with_bias && sgl_mxfp4_libxsmm::cfg_bf16_out();
+      sgl_mxfp4_libxsmm::prewarm_mxfp4(
+          m_sizes, num_m, /* N */ OC, /* K */ IC, /* lda */ IC, /* c_bf16 */ bf16_out, /* ldc */ (int)BLOCK_N);
+    }
+  }
 
   // parallel on [MB2, NB2]
   parallel_2d(MB2, NB2, [&](int64_t mb0, int64_t mb1, int64_t nb0, int64_t nb1) {
@@ -197,6 +267,9 @@ void fused_experts_fp_kernel_impl(
 
     if (use_brgemm) {
       at::native::cpublas::brgemm_release();
+    }
+    if constexpr (is_mxfp4) {
+      sgl_mxfp4_libxsmm::region_end();
     }
   });
 

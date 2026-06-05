@@ -278,3 +278,6 @@ sgl-kernel/csrc/**/*_musa/
 artifacts/
 .claude/scheduled_tasks.lock
 .humanize/
+
+# libxsmm JIT kernel dumps (generated when running the mxfp4 benches)
+*.mxm

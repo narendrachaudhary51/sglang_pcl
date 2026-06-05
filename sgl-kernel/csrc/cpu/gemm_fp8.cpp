@@ -1,5 +1,6 @@
 #include "common.h"
 #include "gemm.h"
+#include "mxfp4_libxsmm_brgemm.h"
 #include "vec.h"
 
 namespace {
@@ -669,6 +670,31 @@ struct brgemm<at::BFloat16, uint8_t, uint8_t, has_bias> {
     // [K, BLOCK_N] -> [K / 2, BLOCK_N * 2]
     const int ldb_tmp = BLOCK_N;
 
+    // Optional libxsmm MXFP4 x BF16 GEMM backend: consumes the prepacked mxfp4
+    // weight directly (no unpack to bf16). libxsmm applies the per-32-K e8m0
+    // micro-scale internally. With no bias we let libxsmm write the bf16 result
+    // straight to C (no F32 Ctmp scratch, no convert epilogue); otherwise it
+    // writes F32 into Ctmp and we run the F32 -> bf16 (+bias) epilogue. Returns
+    // false on a remainder tile / lookup miss, so we fall through to default.
+    if (sgl_mxfp4_libxsmm::enabled()) {
+      if constexpr (!has_bias) {
+        if (sgl_mxfp4_libxsmm::cfg_bf16_out() &&
+            sgl_mxfp4_libxsmm::brgemm_mxfp4_bf16_out(A, B, C, scale, M, N, K, lda, ldb, ldc)) {
+          return;
+        }
+      }
+      if (sgl_mxfp4_libxsmm::brgemm_mxfp4_bf16(A, B, Ctmp, scale, M, N, K, lda, ldb, BLOCK_N)) {
+        for (int m = 0; m < M; ++m) {
+          if constexpr (has_bias) {
+            copy_add_stub(C + m * ldc, Ctmp + m * BLOCK_N, bias, N);
+          } else {
+            copy_stub(C + m * ldc, Ctmp + m * BLOCK_N, N);
+          }
+        }
+        return;
+      }
+    }
+
     if (do_unpack) {
       // group size 32 for mxfp4
       for (int k = 0; k < K; k += 32) {
@@ -871,10 +897,45 @@ void fp_scaled_mm_kernel_impl(
   const int64_t MB = div_up(M, BLOCK_M);
   const int64_t NB = div_up(N, BLOCK_N);
 
-  const bool use_brgemm = can_use_brgemm<packed_t>(M);
+  bool use_brgemm = can_use_brgemm<packed_t>(M);
+
+  // When the libxsmm MXFP4 backend is enabled, the weights are stored in standard
+  // MXFP4-VNNI2 layout (re-shuffled at load time). The default heuristic routes
+  // small token counts (M <= 4) to the AVX512 micro-kernel, which expects the
+  // sgl-kernel-native nibble layout and would mis-read the VNNI2 weights. So
+  // whenever libxsmm is enabled small-M MUST also route through libxsmm for
+  // correctness -- this is not optional and not tied to the small-M A/B knob.
+  if constexpr (std::is_same_v<packed_t, uint8_t>) {
+    if (!use_brgemm && sgl_mxfp4_libxsmm::enabled()) {
+      use_brgemm = true;
+    }
+  }
 
   // use K/2 for mxfp4 and K for fp8
   const int64_t packed_K = get_row_size<packed_t>(K);
+
+  // Pre-compile the libxsmm MXFP4 GEMM kernels for every (m_size, n_size=BLOCK_N)
+  // tile BEFORE the parallel region (libxsmm JIT is unsafe concurrent with
+  // execution on other threads). Only the mxfp4 (uint8 weight) path has a
+  // libxsmm backend; the fp8 path is unaffected.
+  if constexpr (std::is_same_v<packed_t, uint8_t>) {
+    if (use_brgemm && sgl_mxfp4_libxsmm::enabled()) {
+      int m_sizes[2];
+      int num_m = 0;
+      m_sizes[num_m++] = std::min<int64_t>(BLOCK_M, M);
+      if (M % BLOCK_M != 0 && M > BLOCK_M) {
+        m_sizes[num_m++] = M % BLOCK_M;
+      }
+      // When the output is bf16 and there is no bias, libxsmm can store the
+      // result straight to the bf16 output (no F32 scratch + convert epilogue),
+      // so prewarm that kernel variant (ldc == output row stride). Otherwise the
+      // F32-scratch variant (ldc == BLOCK_N) is used.
+      const bool bf16_out =
+          std::is_same_v<scalar_t, at::BFloat16> && bias == nullptr && sgl_mxfp4_libxsmm::cfg_bf16_out();
+      sgl_mxfp4_libxsmm::prewarm_mxfp4(
+          m_sizes, num_m, N, K, /* lda */ mat1_strideM, /* c_bf16 */ bf16_out, /* ldc */ (int)out_strideM);
+    }
+  }
 
   // parallel on [MB, NB]
   AT_DISPATCH_BOOL(bias != nullptr, has_bias, [&] {
@@ -915,6 +976,9 @@ void fp_scaled_mm_kernel_impl(
 
       if (use_brgemm) {
         at::native::cpublas::brgemm_release();
+      }
+      if constexpr (std::is_same_v<packed_t, uint8_t>) {
+        sgl_mxfp4_libxsmm::region_end();
       }
     });
   });
@@ -1102,10 +1166,17 @@ inline const float* get_bias_data(const std::optional<at::Tensor>& bias, int64_t
 // FP8 and MXFP4 WoQ uses the same pattern:
 //   Btmp : [T, BLOCK_N * K]
 //   Ctmp : [T, BLOCK_M * BLOCK_N]
-inline at::Tensor alloc_thread_buffer(const at::TensorOptions& options, int64_t K) {
+inline at::Tensor alloc_thread_buffer(const at::TensorOptions& options, int64_t K, bool minimal = false) {
   constexpr int64_t BLOCK_M = block_size_m();
   constexpr int64_t BLOCK_N = block_size_n();
   int num_threads = at::get_num_threads();
+  // When the libxsmm bf16-direct path owns the whole GEMM, the per-thread unpack
+  // (Btmp) and F32 accumulator (Ctmp) scratch is never touched, so allocate a
+  // 1-element placeholder instead of the full ~MAX_CACHE_BLOCK_SIZE*BLOCK_N*K
+  // slab (avoids a multi-hundred-MB mmap/munmap on every call).
+  if (minimal) {
+    return at::empty({num_threads, 1}, options);
+  }
   int64_t size_per_thread = MAX_CACHE_BLOCK_SIZE * BLOCK_N * K + BLOCK_M * BLOCK_N * 2;
   return at::empty({num_threads, size_per_thread}, options);
 }
@@ -1208,7 +1279,11 @@ at::Tensor mxfp4_scaled_mm_cpu(
   TORCH_CHECK(scales2.scalar_type() == at::kByte, "mxfp4_scaled_mm_cpu: expect scales to be uint8.");
   auto out = at::empty({M, N}, mat1.options());
 
-  auto buffer = alloc_thread_buffer(mat1.options(), K);
+  // If the libxsmm bf16-direct path will handle every tile, the per-thread
+  // unpack/F32 scratch is never touched, so skip its (large) allocation.
+  const bool skip_scratch =
+      sgl_mxfp4_libxsmm::dense_skip_scratch(M, N, /*has_bias*/ bias.has_value(), st == at::kBFloat16, (int)BLOCK_N);
+  auto buffer = alloc_thread_buffer(mat1.options(), K, /*minimal*/ skip_scratch);
 
   AT_DISPATCH_REDUCED_FLOATING_TYPES(st, "mxfp4_scaled_mm_kernel_impl", [&] {
     // used for lambda computing scale offset for each block

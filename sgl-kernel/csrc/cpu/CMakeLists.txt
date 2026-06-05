@@ -140,6 +140,36 @@ Python_add_library(common_ops MODULE USE_SABI ${SKBUILD_SABI_VERSION} WITH_SOABI
 target_link_libraries(common_ops PRIVATE ${TORCH_LIBRARIES} ${NUMA_LIB})
 target_include_directories(common_ops PRIVATE ${TORCH_INCLUDE_DIRS})
 
+# ============================================================================
+# Optional: libxsmm GEMM backend for MXFP4 (e2m1 weight + e8m0 scale) /
+# BF16 activations.
+# ----------------------------------------------------------------------------
+# Enabled when LIBXSMM_ROOT is set in the environment and the build target is
+# x86_64. LIBXSMM_ROOT must point at an install (or build) directory that
+# contains include/libxsmm.h and lib/libxsmm.so (or libxsmm.a). When the
+# variable is unset, the mxfp4 kernels build with only the default oneDNN/AMX
+# tinygemm path and the libxsmm toggle is a no-op.
+# ============================================================================
+if(DEFINED ENV{LIBXSMM_ROOT} AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(LIBXSMM_ROOT "$ENV{LIBXSMM_ROOT}")
+    message(STATUS "libxsmm: enabling mxfp4 GEMM backend (LIBXSMM_ROOT=${LIBXSMM_ROOT})")
+    target_compile_definitions(common_ops PRIVATE SGL_KERNEL_HAS_LIBXSMM)
+    target_include_directories(common_ops PRIVATE "${LIBXSMM_ROOT}/include")
+    find_library(LIBXSMM_LIB
+        NAMES xsmm
+        HINTS "${LIBXSMM_ROOT}/lib" "${LIBXSMM_ROOT}/lib64"
+        NO_DEFAULT_PATH)
+    if(NOT LIBXSMM_LIB)
+        message(FATAL_ERROR "libxsmm: could not find libxsmm in ${LIBXSMM_ROOT}/lib")
+    endif()
+    message(STATUS "libxsmm: using libxsmm at ${LIBXSMM_LIB}")
+    target_link_libraries(common_ops PRIVATE ${LIBXSMM_LIB})
+    # AMX/AVX512 are required by the GEMM kernels libxsmm JITs at runtime;
+    # the x86 -march/-mamx flags set globally above supply them on the host.
+else()
+    message(STATUS "libxsmm: disabled (set LIBXSMM_ROOT to enable mxfp4 GEMM backend)")
+endif()
+
 install(TARGETS common_ops
     LIBRARY DESTINATION sgl_kernel
 )
