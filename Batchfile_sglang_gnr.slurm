@@ -38,7 +38,7 @@ export SGLANG_TORCH_PROFILER_DIR=$HOME/sglang_pcl/profile_log
 
 export no_proxy="localhost,127.0.0.1"
 
-for b in 1; do
+for b in 1 2; do
     # for dataset in gpqa_mlperf_dataset mmlupro_mlperf_dataset livecodebench_mlperf_dataset math500_mlperf_dataset; do
     for dataset in dsr1_mlperf_dataset; do
         echo "-------------------------------------"
@@ -60,9 +60,9 @@ for b in 1; do
             --host 127.0.0.1                                           \
             --port 8000                                                \
             --tp 6                                                     \
-            --max-total-tokens 524288                                  \
-            --enable-torch-compile                                     \
-            --torch-compile-max-bs 16  &> ${TGT_DIR}/sglang_server_bs${b}_$dataset.log &
+            --max-total-tokens 524288    &> ${TGT_DIR}/sglang_server_bs${b}_nocompile_$dataset.log &
+            # --enable-torch-compile                                     \
+            # --torch-compile-max-bs 16  &> ${TGT_DIR}/sglang_server_bs${b}_$dataset.log &
 
         # Wait for the server to become responsive
         echo "Waiting for vLLM server to start..."
