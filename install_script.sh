@@ -6,6 +6,8 @@ source .venv/bin/activate
 
 # Use dedicated toml file
 cd python
+rm -rf ~/.triton/cache/*
+find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
 rm -rf build/ sglang_cpu.egg-info/
 cp pyproject_cpu.toml pyproject.toml
 uv pip install --upgrade pip setuptools
