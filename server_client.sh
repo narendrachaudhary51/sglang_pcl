@@ -22,15 +22,15 @@ export MASTER_PORT="${port}"
 export TIKTOKEN_ENCODINGS_BASE=/scratch/nchaudh1/tiktoken_encodings
 
 SGLANG_CPU_OMP_THREADS_BIND=${core_list} python -m sglang.launch_server              \
-        --model ${model}                           \
-        --quantization w8a8_int8                                   \
+        --model ${model}                                           \
+        --quantization mxfp4                                       \
         --trust-remote-code                                        \
         --disable-overlap-schedule                                 \
         --device cpu                                               \
-        --host ${host}                                            \
+        --host ${host}                                             \
         --port ${port}                                             \
         --tp ${TP}                                                 \
-        --max-total-tokens 65536                                   \
+        --max-total-tokens 524288                                  \
         --enable-torch-compile                                     \
         --torch-compile-max-bs 8  &> ${TGT_DIR}/sglang_server_bs${b}_${dataset}_${core_list}.log &
 
@@ -40,16 +40,16 @@ echo "Waiting for sglang server to start..."
 while ! curl -fsS "http://${host}:${port}/health" >/dev/null 2>&1; do sleep 2; done
 echo "Server is ready."
 
-sudo /etc/pcl_cleanup_memory.sh
+# sudo /etc/pcl_cleanup_memory.sh
 
-SGLANG_CPU_OMP_THREADS_BIND=${core_list} python bench_serving.py \
-    --backend sglang \
-    --model ${model}  \
-    --host ${host} --port ${port} \
+SGLANG_CPU_OMP_THREADS_BIND=${core_list} python bench_serving.py     \
+    --backend sglang                                                 \
+    --model ${model}                                                 \
+    --host ${host} --port ${port}                                    \
     --num-prompts $num_prompts --max-concurrency $b --output-details \
-    --sharegpt-output-len 20000 --sharegpt-context-len 23140 \
-    --request-rate 100 \
-    --seed ${port} \
+    --sharegpt-output-len 20000 --sharegpt-context-len 23140         \
+    --request-rate 100                                               \
+    --seed ${port}                                                   \
     --dataset-name custom_hf --dataset-path /cold_storage/ml_datasets/narendra/huggingface/hub/$dataset &> ${TGT_DIR}/sglang_client_bs${b}_${dataset}_${core_list}.log
 
 rm -rf $TORCHINDUCTOR_CACHE_DIR

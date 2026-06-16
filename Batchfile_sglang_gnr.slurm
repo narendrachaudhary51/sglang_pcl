@@ -7,7 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=256
-#SBATCH --time=5:59:00
+#SBATCH --time=3:59:00
 
 hostname
 
@@ -35,7 +35,7 @@ export KMP_AFFINITY=granularity=fine,compact,1,0
 export KMP_BLOCKTIME=50
 export OMP_WAIT_POLICY=ACTIVE
 
-export TGT_DIR=Qwen3-235B-A22B-W8A8-GNR-TP2
+export TGT_DIR=gpt-oss-120b-GNR-TP1_run2
 mkdir -p $TGT_DIR
 export SGLANG_TORCH_PROFILER_DIR=$HOME/sglang_pcl/profile_log
 
@@ -53,24 +53,25 @@ for b in 1 2 4 8; do
         # else
             # num_prompts=100
         # fi
-        num_prompts=40
+        num_prompts=20
 
-        # model="openai/gpt-oss-120b"
-        model="FabioTrindade/Qwen3-235B-A22B-W8A8"
+        model="openai/gpt-oss-120b"
+        # model="FabioTrindade/Qwen3-235B-A22B-W8A8"
 
-        numactl --membind="0,1" ./server_client.sh $b $num_prompts "127.0.0.1" 8000 2 "0-39|43-82" $model $dataset $TGT_DIR &
+        numactl --membind="0" ./server_client.sh $b $num_prompts "127.0.0.1" 8000 1 "0-39" $model $dataset $TGT_DIR &
         pid1=$!
-        numactl --membind="2,3" ./server_client.sh $b $num_prompts "127.0.0.1" 8001 2 "86-125|128-167" $model $dataset $TGT_DIR &
+        numactl --membind="1" ./server_client.sh $b $num_prompts "127.0.0.1" 8001 1 "43-82" $model $dataset $TGT_DIR &
         pid2=$!
-        numactl --membind="4,5" ./server_client.sh $b $num_prompts "127.0.0.1" 8002 2 "171-210|214-253" $model $dataset $TGT_DIR &
+        numactl --membind="2" ./server_client.sh $b $num_prompts "127.0.0.1" 8002 1 "86-125" $model $dataset $TGT_DIR &
         pid3=$!
-        # ./server_client.sh $b $num_prompts 8003 1 "128-167" $model $dataset $TGT_DIR &
-        # ./server_client.sh $b $num_prompts 8004 1 "171-210" $model $dataset $TGT_DIR &
-        # ./server_client.sh $b $num_prompts 8005 1 "214-253" $model $dataset $TGT_DIR &
+        numactl --membind="3" ./server_client.sh $b $num_prompts "127.0.0.1" 8003 1 "128-167" $model $dataset $TGT_DIR &
+        pid4=$!
+        numactl --membind="4" ./server_client.sh $b $num_prompts "127.0.0.1" 8004 1 "171-210" $model $dataset $TGT_DIR &
+        pid5=$!
+        numactl --membind="5" ./server_client.sh $b $num_prompts "127.0.0.1" 8005 1 "214-253" $model $dataset $TGT_DIR &
+        pid6=$!
 
-        wait $pid1 
-        wait $pid2 
-        wait $pid3
+        wait $pid1 $pid2 $pid3 $pid4 $pid5 $pid6
         echo "Completed benchmark with batch size: $b and dataset $dataset on all cores"
         
         # python -m sglang.launch_server              \
