@@ -23,6 +23,9 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/data/nfs_home/nchaudh1/lib/lib
 export LD_LIBRARY_PATH=/data/swtools/intel/2025.2.0/lib:$LD_LIBRARY_PATH
 export SGLANG_USE_CPU_ENGINE=1
 
+export LIBXSMM_ROOT=/data/nfs_home/nchaudh1/libxsmm
+export LD_LIBRARY_PATH=$LIBXSMM_ROOT/lib:$LD_LIBRARY_PATH
+
 export LD_PRELOAD=$HOME/jemalloc/lib/libjemalloc.so:$LD_PRELOAD
 export MALLOC_CONF="oversize_threshold:1,background_thread:true,metadata_thp:auto,dirty_decay_ms:-1,muzzy_decay_ms:-1"
 
@@ -38,7 +41,7 @@ export TGT_DIR=gpt-oss-120b-EMR-TP1-server2-evangelos
 mkdir -p $TGT_DIR
 export SGLANG_CPU_MXFP4_LIBXSMM=1
 
-for b in 1; do
+for b in 1 2 4 8; do
     # for dataset in gpqa_mlperf_dataset mmlupro_mlperf_dataset livecodebench_mlperf_dataset math500_mlperf_dataset; do
     for dataset in dsr1_mlperf_dataset; do
         echo "-------------------------------------"

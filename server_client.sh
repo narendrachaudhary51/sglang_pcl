@@ -50,6 +50,7 @@ SGLANG_CPU_OMP_THREADS_BIND=${core_list} python bench_serving.py     \
     --sharegpt-output-len 20000 --sharegpt-context-len 23140         \
     --request-rate 100                                               \
     --seed ${port}                                                   \
+    --disable-ignore-eos                                             \
     --dataset-name custom_hf --dataset-path /cold_storage/ml_datasets/narendra/huggingface/hub/$dataset &> ${TGT_DIR}/sglang_client_bs${b}_${dataset}_${core_list}.log
 
 rm -rf $TORCHINDUCTOR_CACHE_DIR

@@ -16,4 +16,4 @@ uv pip install .
 # Build the CPU backend kernels
 cd ../sgl-kernel
 cp pyproject_cpu.toml pyproject.toml
-uv pip install .
+LIBXSMM_ROOT=/data/nfs_home/nchaudh1/libxsmm uv pip install .
