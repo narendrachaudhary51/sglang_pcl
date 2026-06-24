@@ -5,7 +5,7 @@ description: 'This skill is for benchmarking CPU GEMM performance for shapes and
 
 # Step 1: Read a model configration and get shapes
 
-- Read the model configuration file from the huggingface directory (/scratch/nchaudh1/huggingface/hub/) and get the shapes of the GEMM operations in the model. 
+- Read the model configuration file from the huggingface directory ($HF_HOME/hub/) and get the shapes of the GEMM operations in the model. 
 - We basically want to get N, K for each GEMM operation in the model.
 - Vary the M parameter for each GEMM operation in the model. Assume, M is equivalent to batch size and can be any values in these ranges: 1, 2, 4, 8, 16, 32, 64, 128, 256. 512.
 - Attempt to ascertain the shapes of GEMM operations for TP=1 and TP=2.
