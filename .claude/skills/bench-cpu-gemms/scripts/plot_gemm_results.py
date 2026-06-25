@@ -46,7 +46,7 @@ def plot_metric(data, meta, tp, metric_idx, ylabel, title, out_path):
         N, K, prec = meta[(t, layer)]
         ms = [r[0] for r in rows]
         ys = [r[metric_idx] for r in rows]
-        ax.plot(ms, ys, marker="o", label=f"{layer} (N={N},K={K})")
+        ax.plot(ms, ys, marker="o", label=f"{layer} (N={N},K={K},{prec})")
     ax.set_xscale("log", base=2)
     ax.set_xlabel("M (batch / num tokens)")
     ax.set_ylabel(ylabel)
@@ -69,16 +69,17 @@ def main():
 
     data, meta = load(CSV)
     tps = sorted({k[0] for k in data})
-    prec = next(iter(meta.values()))[2]
     for tp in tps:
+        precs = sorted({m[2] for k, m in meta.items() if k[0] == tp})
+        prec = "MIXED" if len(precs) > 1 else precs[0].upper()
         plot_metric(
             data, meta, tp, 1, "TFLOPS",
-            f"{args.model}-{prec.upper()} GEMM TFLOPS (TP={tp})",
+            f"{args.model}-{prec} GEMM TFLOPS (TP={tp})",
             os.path.join(REF, f"tflops_tp{tp}.png"),
         )
         plot_metric(
             data, meta, tp, 2, "Bandwidth (GB/s)",
-            f"{args.model}-{prec.upper()} GEMM Bandwidth (TP={tp})",
+            f"{args.model}-{prec} GEMM Bandwidth (TP={tp})",
             os.path.join(REF, f"bandwidth_tp{tp}.png"),
         )
 

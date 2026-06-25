@@ -69,9 +69,9 @@ def bench_mxfp4(M, N, K):
     print(f"{ms:.3f} ms/iter | {tflops:.2f} TFLOPS | {gbps:.2f} GB/s")
     return ms, tflops, gbps
 
-assert len(sys.argv) > 3, f"usage: {sys.argv[0]} M N K"
-M, N, K = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
-assert K % GROUP_SIZE == 0, "K must be a multiple of the mxfp4 group size (32)"
-
 if __name__ == "__main__":
+    assert len(sys.argv) > 3, f"usage: {sys.argv[0]} M N K"
+    M, N, K = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+    assert K % GROUP_SIZE == 0, "K must be a multiple of the mxfp4 group size (32)"
+    
     bench_mxfp4(M, N, K)

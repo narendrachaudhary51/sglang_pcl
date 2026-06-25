@@ -3,13 +3,23 @@ name: bench-cpu-gemms
 description: 'This skill is for benchmarking CPU GEMM performance for shapes and precisions used in the model. It will run the benchmark for each shape and precision and print the performance in TFLOPs and bandwidth in GB/s.'
 ---
 
+# Prestep: Acquire and navigate to compute node
+
+- Acquire a compute node with the following command:
+```bash
+  salloc --partition=emr-constraint="ddr5600" --time=03:59:00
+```
+- Use the following command to navigate to the compute node:
+```bash
+  srun --pty /bin/bash
+```
 # Step 1: Read a model configration and get shapes
 
 - Read the model configuration file from the huggingface directory ($HF_HOME/hub/) and get the shapes of the GEMM operations in the model. 
 - We basically want to get N, K for each GEMM operation in the model.
-- Vary the M parameter for each GEMM operation in the model. Assume, M is equivalent to batch size and can be any values in these ranges: 1, 2, 4, 8, 16, 32, 64, 128, 256. 512.
-- Attempt to ascertain the shapes of GEMM operations for TP=1 and TP=2.
 - Also attempt to get the precision of the GEMM operations in the model.
+- Attempt to ascertain the shapes of GEMM operations for TP=1 and TP=2.
+- Vary the M parameter for each GEMM operation in the model. Assume, M is equivalent to batch size and can be any values in these ranges: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512.
 - Write these shapes into a references/gemm_shapes.txt file. This file will be used as input for the benchmark script in the next step.
 
 # Step 2: Reinstall the environment
@@ -22,11 +32,11 @@ description: 'This skill is for benchmarking CPU GEMM performance for shapes and
 # Step 3: Run the benchmark with environment
 
 - Run the benchmark scripts using the scripts/bench_environ.sh from this skill. 
-- Read the shapes from the references/gemm_shapes.txt file and run the benchmark script for each shape.
-- Benchmark scripts for each precision are present in the scripts directory of this skill. They take M, N, K as input, run the benchmark and print the performance in TFLOPs and bandwidth in GB/s. 
+- Read the shapes from the references/gemm_shapes.txt file and run the scripts/run_gemm_sweep.py to get the data for each shape.
+- Benchmark functions and scripts for each precision are present in the scripts directory of this skill. They take M, N, K as input, run the benchmark and return time in ms, performance in TFLOPs and bandwidth in GB/s. 
 - Write the shape, precision, TFLOPs and bandwidth into a references/gemm_benchmark_results.csv file.
 
 # Step 4: Plot the results
 
-- Plot the results from the references/gemm_benchmark_results.csv file using the scripts/plot_gemm_results.py script. This script will generate plots for each precision and save them in the references/plots directory. The plots will show the performance in TFLOPs and bandwidth in GB/s for each shape and precision.
+- Plot the results from the references/gemm_benchmark_results.csv file using the scripts/plot_gemm_results.py script. This script takes model name as an input. This script will generate plots for each precision and save them in the references/plots directory. The plots will show the performance in TFLOPs and bandwidth in GB/s for each shape and precision.
 

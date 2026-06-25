@@ -55,8 +55,8 @@ def bench_bf16(M, N, K):
     print(f"{ms:.3f} ms/iter | {tflops:.2f} TFLOPS | {gbps:.2f} GB/s")
     return ms, tflops, gbps
 
-assert len(sys.argv) > 3, f"usage: {sys.argv[0]} M N K"
-M, N, K = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
-
 if __name__ == "__main__":
+    assert len(sys.argv) > 3, f"usage: {sys.argv[0]} M N K"
+    M, N, K = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+    
     bench_bf16(M, N, K)
