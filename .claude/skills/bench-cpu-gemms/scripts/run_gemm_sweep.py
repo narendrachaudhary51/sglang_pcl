@@ -12,11 +12,8 @@ REF = os.path.join(HERE, "..", "references")
 SHAPES = os.path.join(REF, "gemm_shapes.txt")
 OUT = os.path.join(REF, "gemm_benchmark_results.csv")
 
-M_LIST = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
-block_size = [128, 128]
 
-
-def main():
+def main(M_LIST):
     shapes = []
     with open(SHAPES) as f:
         for line in f:
@@ -51,4 +48,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    M_LIST = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+    # Take M_LIST from command line if provided
+    if len(sys.argv) > 1:
+        M_LIST = [int(x) for x in sys.argv[1:]]
+    main(M_LIST)
