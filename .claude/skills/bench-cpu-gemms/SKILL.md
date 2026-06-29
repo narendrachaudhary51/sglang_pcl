@@ -28,7 +28,7 @@ description: 'This skill is for benchmarking CPU GEMM performance for shapes and
 - Set the TILE sizes (TILE_M, TILE_N, TILE_K) from these values. 
   - TILE_M: 16
   - TILE_N: 16
-  - TILE_K: 64 
+  - TILE_K: 32 
 
 - Record the configrations. We will rename the plot and csv files to include the TILE sizes in the file names. This will help us to identify the performance of GEMM operations for different TILE sizes.
 
