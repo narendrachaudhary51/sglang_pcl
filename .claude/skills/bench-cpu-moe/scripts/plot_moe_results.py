@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Plot TFLOPS and Bandwidth vs M from gemm_benchmark_results.csv.
+"""Plot TFLOPS and Bandwidth vs M from moe_benchmark_results.csv.
 
-Reads references/${model_name}/gemm_benchmark_results.csv and produces, for each TP value,
+Reads references/${model_name}/moe_benchmark_results.csv and produces, for each TP value,
 two line plots (TFLOPS and Bandwidth) where each curve is one GEMM layer.
 """
 import argparse
@@ -25,8 +25,12 @@ def load(path):
     # data[(tp, layer)] -> list of (M, tflops, gbps), N, K, precision
     data = defaultdict(list)
     meta = {}
+    required = ("tp", "layer", "precision", "M", "N", "K", "tflops", "bandwidth_gbps")
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
+            # Skip blank/trailing lines and any row missing required fields.
+            if row is None or any(row.get(col) in (None, "") for col in required):
+                continue
             tp = int(row["tp"])
             layer = row["layer"]
             key = (tp, layer)
@@ -70,7 +74,7 @@ def main():
     args = parser.parse_args()
 
     ref = ref_path(args.model)
-    csv_path = os.path.join(ref, "gemm_benchmark_results.csv")
+    csv_path = os.path.join(ref, "moe_benchmark_results.csv")
     data, meta = load(csv_path)
     tps = sorted({k[0] for k in data})
     for tp in tps:
@@ -78,12 +82,12 @@ def main():
         prec = "MIXED" if len(precs) > 1 else precs[0].upper()
         plot_metric(
             data, meta, tp, 1, "TFLOPS",
-            f"{args.model}-{prec} GEMM TFLOPS (TP={tp})",
+            f"{args.model}-{prec} MoE TFLOPS (TP={tp})",
             os.path.join(ref, f"tflops_tp{tp}.png"),
         )
         plot_metric(
             data, meta, tp, 2, "Bandwidth (GB/s)",
-            f"{args.model}-{prec} GEMM Bandwidth (TP={tp})",
+            f"{args.model}-{prec} MoE Bandwidth (TP={tp})",
             os.path.join(ref, f"bandwidth_tp{tp}.png"),
         )
 

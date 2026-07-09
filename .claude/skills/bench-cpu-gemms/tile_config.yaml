@@ -1,0 +1,19 @@
+Configration-1:
+  - TILE_M: 16
+  - TILE_N: 16
+  - TILE_K: 32
+
+Configration-2:
+  - TILE_M: 32
+  - TILE_N: 16
+  - TILE_K: 32
+
+Configration-3:
+  - TILE_M: 16
+  - TILE_N: 16
+  - TILE_K: 16
+
+Configration-4:
+  - TILE_M: 32
+  - TILE_N: 16
+  - TILE_K: 16   

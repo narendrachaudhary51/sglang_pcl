@@ -1,18 +1,14 @@
 import torch, time, math, os, sys
 import sgl_kernel  # registers torch.ops.sgl_kernel.* CPU ops
-from bench_sglang_fp8_gemm import bench_fp8
-from bench_sglang_mxfp4_gemm import bench_mxfp4
-from bench_sglang_bf16_gemm import bench_bf16
+from bench_sglang_bf16_moe import bench_bf16_moe
 
-fp8_scaled_mm_cpu = torch.ops.sgl_kernel.fp8_scaled_mm_cpu
-convert_weight_packed = torch.ops.sgl_kernel.convert_weight_packed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main(M_LIST, model_name):
     REF = os.path.join(HERE, "..", "references", model_name)
-    SHAPES = os.path.join(REF, "gemm_shapes.txt")
-    OUT = os.path.join(REF, "gemm_benchmark_results.csv")
+    SHAPES = os.path.join(REF, "moe_shapes.txt")
+    OUT = os.path.join(REF, "moe_benchmark_results.csv")
 
     shapes = []
     with open(SHAPES) as f:
@@ -20,21 +16,21 @@ def main(M_LIST, model_name):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            tp, layer, prec, N, K = line.split()
-            shapes.append((int(tp), layer, prec, int(N), int(K)))
+            tp, layer, prec, N, K, E, topk = line.split()
+            shapes.append((int(tp), layer, prec, int(N), int(K), int(E), int(topk)))
 
     rows = []
     print(f"{'tp':>2} {'layer':<14} {'prec':<4} {'M':>5} {'N':>6} {'K':>6} "
           f"{'ms':>9} {'TFLOPS':>8} {'GB/s':>9}")
     bench_fns = {
-        "fp8": bench_fp8,
-        "mxfp4": bench_mxfp4,
-        "bf16": bench_bf16,
+        # "fp8": bench_fp8,
+        # "mxfp4": bench_mxfp4,
+        "bf16": bench_bf16_moe,
     }
-    for tp, layer, prec, N, K in shapes:
+    for tp, layer, prec, N, K, E, topk in shapes:
         bench_fn = bench_fns[prec]
         for M in M_LIST:
-            ms, tflops, gbps = bench_fn(M, N, K)
+            ms, tflops, gbps = bench_fn(M, N, K, num_experts=E, topk=topk)
             print(f"{tp:>2} {layer:<14} {prec:<4} {M:>5} {N:>6} {K:>6} "
                   f"{ms:>9.3f} {tflops:>8.2f} {gbps:>9.2f}")
             rows.append((tp, layer, prec, M, N, K, ms, tflops, gbps))
