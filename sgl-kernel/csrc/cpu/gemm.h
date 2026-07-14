@@ -44,7 +44,7 @@ inline bool can_use_brgemm<at::Float8_e4m3fn>(int M) {
 }
 
 // work around compiler internal error
-#define BLOCK_K 128  // 4 * TILE_K
+#define BLOCK_K 4 * TILE_K
 
 // adjust leading dimension size for K
 template <typename T>
