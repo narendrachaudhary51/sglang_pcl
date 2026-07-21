@@ -2,50 +2,47 @@ import torch, time
 import sys
 import sgl_kernel  # registers torch.ops.sgl_kernel.* CPU ops
 
-mxfp4_scaled_mm_cpu = torch.ops.sgl_kernel.mxfp4_scaled_mm_cpu
+int8_scaled_mm_cpu = torch.ops.sgl_kernel.int8_scaled_mm_cpu
+per_token_quant_int8_cpu = torch.ops.sgl_kernel.per_token_quant_int8_cpu
 convert_weight_packed = torch.ops.sgl_kernel.convert_weight_packed
-convert_scale_packed = torch.ops.sgl_kernel.convert_scale_packed
 
-# mxfp4 weight is 4-bit (E2M1), packed 2 values per uint8 byte along K.
-# scales are E8M0 (uint8) shared over groups of 32 along K.
-GROUP_SIZE = 32
-
-def bench_mxfp4(M, N, K):
+def bench_int8(M, N, K):
 
     # Build enough distinct (a, b, scales) sets so the combined working set exceeds cache.
     # Size a single layer's footprint, then pick num_layers to blow past a large LLC.
     CACHE_BYTES = 5 * 1024 * 1024 * 1024  # assume 5 GB working set
 
     bytes_per_layer = (
-        M * K * 2                      # a: bf16
-        + N * (K // 2)                 # b_packed: uint8
-        + N * (K // GROUP_SIZE)        # scales: uint8
+        M * K          # a_q: uint8 (1 byte)
+        + M * 4        # scales1: fp32 (per-token)
+        + N * K        # b_packed: int8 (1 byte)
+        + N * 4        # scales2: fp32 (per-channel)
     )
     num_layers = max(2, (CACHE_BYTES // bytes_per_layer) + 1)
     print(f"num_layers={num_layers} | working set ~{num_layers*bytes_per_layer/1e6:.1f} MB")
 
     a_list = []
+    scales1_list = []
     b_list = []
-    scales_list = []
+    scales2_list = []
     for _ in range(num_layers):
-        # activation stays bf16
         a = torch.randn(M, K, dtype=torch.bfloat16)
+        a_q, scales1 = per_token_quant_int8_cpu(a)  # quantize activation up front
 
-        # weight: [N, K/2] uint8, each byte holds two FP4 nibbles (any nibble is a valid code)
-        b_fp4 = torch.randint(0, 256, (N, K // 2), dtype=torch.uint8)
-        b_packed = convert_weight_packed(b_fp4)  # pack to VNNI so packing isn't timed
+        b = torch.randint(-128, 127, (N, K), dtype=torch.int8)
+        b_packed = convert_weight_packed(b)  # pack to VNNI so packing isn't timed
 
-        # scales: E8M0 exponents, [N, K/32] uint8 (numel == N*K/32). ~127 => scale ~1.0
-        scales = torch.randint(126, 130, (N, K // GROUP_SIZE), dtype=torch.uint8)
-        scales_packed = convert_scale_packed(scales)  # prepack so packing isn't timed
+        scales2 = torch.randn(N, dtype=torch.float32)
 
-        a_list.append(a)
+        a_list.append(a_q)
+        scales1_list.append(scales1)
         b_list.append(b_packed)
-        scales_list.append(scales_packed)
+        scales2_list.append(scales2)
+
 
     def run_all():
-        for a, b_packed, scales in zip(a_list, b_list, scales_list):
-            mxfp4_scaled_mm_cpu(a, b_packed, scales, None, True)
+        for a_q, b_packed, scales1, scales2 in zip(a_list, b_list, scales1_list, scales2_list):
+            int8_scaled_mm_cpu(a_q, b_packed, scales1, scales2, None, torch.bfloat16, True)
 
 
     # warmup
@@ -62,10 +59,10 @@ def bench_mxfp4(M, N, K):
 
     # Calculate bandwidth
     a_bytes = a_list[0].numel() * a_list[0].element_size()
+    scales1_bytes = scales1_list[0].numel() * scales1_list[0].element_size()
     b_bytes = b_list[0].numel() * b_list[0].element_size()
-    scales_bytes = scales_list[0].numel() * scales_list[0].element_size()
-
-    total_bytes = a_bytes + b_bytes + scales_bytes
+    scales2_bytes = scales2_list[0].numel() * scales2_list[0].element_size()
+    total_bytes = a_bytes + scales1_bytes + b_bytes + scales2_bytes
     gbps = total_bytes / (ms * 1e-3) / 1e9  # bytes/sec to GB/sec
 
     print(f"{ms:.3f} ms/iter | {tflops:.2f} TFLOPS | {gbps:.2f} GB/s")
@@ -74,6 +71,5 @@ def bench_mxfp4(M, N, K):
 if __name__ == "__main__":
     assert len(sys.argv) > 3, f"usage: {sys.argv[0]} M N K"
     M, N, K = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
-    assert K % GROUP_SIZE == 0, "K must be a multiple of the mxfp4 group size (32)"
 
-    bench_mxfp4(M, N, K)
+    bench_int8(M, N, K)

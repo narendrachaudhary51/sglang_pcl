@@ -1,6 +1,9 @@
 import torch, time, math, os, sys
 import sgl_kernel  # registers torch.ops.sgl_kernel.* CPU ops
 from bench_sglang_bf16_moe import bench_bf16_moe
+from bench_sglang_fp8_moe import bench_fp8_moe
+from bench_sglang_mxfp4_moe import bench_mxfp4_moe
+from bench_sglang_int8_moe import bench_int8_moe
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,8 +26,9 @@ def main(M_LIST, model_name):
     print(f"{'tp':>2} {'layer':<14} {'prec':<4} {'M':>5} {'N':>6} {'K':>6} "
           f"{'ms':>9} {'TFLOPS':>8} {'GB/s':>9}")
     bench_fns = {
-        # "fp8": bench_fp8,
-        # "mxfp4": bench_mxfp4,
+        "int8": bench_int8_moe,
+        "fp8": bench_fp8_moe,
+        "mxfp4": bench_mxfp4_moe,
         "bf16": bench_bf16_moe,
     }
     for tp, layer, prec, N, K, E, topk in shapes:

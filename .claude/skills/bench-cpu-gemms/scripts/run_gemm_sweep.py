@@ -3,6 +3,7 @@ import sgl_kernel  # registers torch.ops.sgl_kernel.* CPU ops
 from bench_sglang_fp8_gemm import bench_fp8
 from bench_sglang_mxfp4_gemm import bench_mxfp4
 from bench_sglang_bf16_gemm import bench_bf16
+from bench_sglang_int8_gemm import bench_int8
 
 fp8_scaled_mm_cpu = torch.ops.sgl_kernel.fp8_scaled_mm_cpu
 convert_weight_packed = torch.ops.sgl_kernel.convert_weight_packed
@@ -27,6 +28,7 @@ def main(M_LIST, model_name):
     print(f"{'tp':>2} {'layer':<14} {'prec':<4} {'M':>5} {'N':>6} {'K':>6} "
           f"{'ms':>9} {'TFLOPS':>8} {'GB/s':>9}")
     bench_fns = {
+        "int8": bench_int8,
         "fp8": bench_fp8,
         "mxfp4": bench_mxfp4,
         "bf16": bench_bf16,
