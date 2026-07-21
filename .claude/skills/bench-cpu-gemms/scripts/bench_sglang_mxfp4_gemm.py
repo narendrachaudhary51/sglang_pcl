@@ -59,9 +59,9 @@ def bench_mxfp4(M, N, K):
     tflops = 2 * M * N * K / (ms * 1e-3) / 1e12
 
     # Calculate bandwidth
-    a_bytes = a.numel() * a.element_size()
-    b_bytes = b_packed.numel() * b_packed.element_size()
-    scales_bytes = scales.numel() * scales.element_size()
+    a_bytes = a_list[0].numel() * a_list[0].element_size()
+    b_bytes = b_list[0].numel() * b_list[0].element_size()
+    scales_bytes = scales_list[0].numel() * scales_list[0].element_size()
 
     total_bytes = a_bytes + b_bytes + scales_bytes
     gbps = total_bytes / (ms * 1e-3) / 1e9  # bytes/sec to GB/sec
