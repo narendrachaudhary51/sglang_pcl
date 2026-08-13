@@ -1,6 +1,6 @@
 ---
 name: bench-cpu-gemms
-description: 'This skill is for benchmarking CPU GEMM performance for shapes and precisions used in a model. It will run the benchmark for each shape and precision and print the performance in TFLOPs and bandwidth in GB/s.'
+description: 'This skill is for benchmarking CPU GEMM performance for shapes and precisions used in a model. It will run the benchmark for each shape and precision, save the performance data in TFLOPs and bandwidth in GB/s, plot it and save it.'
 ---
 
 # Prestep: Acquire and navigate to compute node
@@ -13,7 +13,7 @@ description: 'This skill is for benchmarking CPU GEMM performance for shapes and
 ```bash
   srun --pty /bin/bash
 ```
-# Step 1: Read a model configration and get shapes
+# Step 1: Read a model's configration and get shapes
 
 - Read the model configuration file from the huggingface directory ($HF_HOME/hub/) and get the shapes of the GEMM operations in the model. 
   If Q, K, V gemms can be fused than assume that they are fused into a single GEMM operation.

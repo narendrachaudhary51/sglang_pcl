@@ -19,7 +19,7 @@ def fused_moe(a, packed_w1, packed_w2, score, topk, renormalize, prepack):
     )
 
     unique_experts = topk_ids.unique().numel()
-    inplace = True
+    inplace = False
     start = time.perf_counter()
     fused_output = fused_experts_cpu(
         a,

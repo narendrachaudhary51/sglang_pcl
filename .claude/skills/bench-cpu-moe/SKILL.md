@@ -1,6 +1,6 @@
 ---
 name: bench-cpu-moe
-description: 'This skill is for benchmarking fused CPU MoE kernel performance for shapes and precisions used in a model. It will run the benchmark for each shape and precision and print the performance in TFLOPs and bandwidth in GB/s.'
+description: 'This skill is for benchmarking fused CPU MoE kernel performance for shapes and precisions used in a model. It will run the benchmark for each shape and precision, save the performance data in TFLOPs and bandwidth in GB/s, plot it and save it.'
 ---
 
 # Prestep: Acquire and navigate to compute node
@@ -21,7 +21,7 @@ description: 'This skill is for benchmarking fused CPU MoE kernel performance fo
 - Attempt to ascertain the shapes of MoE operations for TP=1 and TP=2.
 - Write these shapes into a references/${model_name}/moe_shapes.txt file. This file will be used as input for the benchmark script in the next step.
 
-# Step 2: Edit TILE SIZES for GEMM operations
+# Step 2: Edit TILE SIZES
 
 - In this step, we edit lines 7-9 of sgl-kernel/csrc/cpu/gemm.h file to set the TILE sizes for MoE operations.
 - Pick a TILE size configration (TILE_M, TILE_N, TILE_K) from tile_config.yaml in this directory.  
