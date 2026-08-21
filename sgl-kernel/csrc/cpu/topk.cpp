@@ -77,7 +77,7 @@ void grouped_topk_kernel_impl(
     int64_t topk_group,
     bool renormalize) {
   const int64_t num_experts_per_group = NUM_EXPERTS / num_groups;
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     alignas(64) float scores[NUM_EXPERTS];
 
     using elem_t = std::pair<float, int32_t>;
@@ -179,7 +179,7 @@ void topk_sigmoid_kernel_impl(
     bool renormalize) {
   using Vec = at::vec::Vectorized<float>;
   const int64_t num_experts_per_group = NUM_EXPERTS;
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     alignas(64) float scores[NUM_EXPERTS];
     using elem_t = std::pair<float, int32_t>;
     std::vector<elem_t> queue(num_experts_per_group);
@@ -227,7 +227,7 @@ void topk_softmax_kernel_impl(
     int64_t topk,
     bool renormalize) {
   const int64_t num_experts_per_group = NUM_EXPERTS;
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     alignas(64) float scores[NUM_EXPERTS];
     using elem_t = std::pair<float, int32_t>;
     std::vector<elem_t> queue(num_experts_per_group);
@@ -297,7 +297,7 @@ void biased_grouped_topk_kernel_impl(
 
   bool apply_scaling_factor = scaling_factor_value != 1.0f;
   const int64_t num_experts_per_group = NUM_EXPERTS / num_groups;
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     // scores: sigmoid
     alignas(64) float scores[NUM_EXPERTS];
     // scores for choice: sigmoid + bias
@@ -449,15 +449,21 @@ void biased_grouped_topk_kernel_impl(
 
 std::tuple<at::Tensor, at::Tensor>
 topk_sigmoid_cpu(at::Tensor& hidden_states, at::Tensor& gating_output, int64_t topk, bool renormalize) {
+#ifdef DEBUG
   CHECK_INPUT(gating_output);
+#endif
 
   const auto st = hidden_states.scalar_type();
+#ifdef DEBUG
   CHECK_EQ(gating_output.scalar_type(), st);
+#endif
 
   int64_t num_tokens = hidden_states.size(0);
   int64_t num_experts = gating_output.size(1);
+#ifdef DEBUG
   TORCH_CHECK(gating_output.size(0) == num_tokens, "Number of tokens mismatch");
   TORCH_CHECK(topk == 1, "topk_sigmoid only supports topk=1 case");
+#endif
   at::Tensor topk_weights = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kFloat));
   at::Tensor topk_ids = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kInt));
 
@@ -502,14 +508,20 @@ topk_sigmoid_cpu(at::Tensor& hidden_states, at::Tensor& gating_output, int64_t t
 
 std::tuple<at::Tensor, at::Tensor>
 topk_softmax_cpu(at::Tensor& hidden_states, at::Tensor& gating_output, int64_t topk, bool renormalize) {
+#ifdef DEBUG
   CHECK_INPUT(gating_output);
+#endif
 
   const auto st = hidden_states.scalar_type();
+#ifdef DEBUG
   CHECK_EQ(gating_output.scalar_type(), st);
+#endif
 
   int64_t num_tokens = hidden_states.size(0);
   int64_t num_experts = gating_output.size(1);
+#ifdef DEBUG
   TORCH_CHECK(gating_output.size(0) == num_tokens, "Number of tokens mismatch");
+#endif
 
   at::Tensor topk_weights = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kFloat));
   at::Tensor topk_ids = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kInt));
@@ -572,6 +584,7 @@ std::tuple<at::Tensor, at::Tensor> grouped_topk_cpu(
     std::optional<at::Tensor> num_token_non_padded) {
   // TODO: Will support num_fused_shared_experts, routed_scaling_factor and num_token_non_padded.
   // For now, we just check them as default value.
+#ifdef DEBUG
   TORCH_CHECK(
       num_fused_shared_experts == 0,
       "num_fused_shared_experts must be 0 default value, got: ",
@@ -586,13 +599,17 @@ std::tuple<at::Tensor, at::Tensor> grouped_topk_cpu(
       num_token_non_padded.value());
 
   CHECK_INPUT(gating_output);
-
+#endif
   const auto st = hidden_states.scalar_type();
+#ifdef DEBUG
   CHECK_EQ(gating_output.scalar_type(), st);
+#endif
 
   int64_t num_tokens = hidden_states.size(0);
   int64_t num_experts = gating_output.size(1);
+#ifdef DEBUG
   TORCH_CHECK(gating_output.size(0) == num_tokens, "Number of tokens mismatch");
+#endif
   at::Tensor topk_weights = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kFloat));
   at::Tensor topk_ids = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kInt));
 
@@ -649,6 +666,7 @@ std::tuple<at::Tensor, at::Tensor> biased_grouped_topk_cpu(
     std::optional<at::Tensor> num_token_non_padded) {
   // TODO: Will support num_fused_shared_experts and num_token_non_padded.
   // For now, we just check them as default value.
+#ifdef DEBUG
   TORCH_CHECK(
       num_fused_shared_experts == 0,
       "num_fused_shared_experts must be 0 default value, got: ",
@@ -660,18 +678,23 @@ std::tuple<at::Tensor, at::Tensor> biased_grouped_topk_cpu(
 
   CHECK_INPUT(gating_output);
   CHECK_INPUT(correction_bias);
+#endif
 
   const auto st = gating_output.scalar_type();
   int64_t num_tokens = hidden_states.size(0);
   int64_t num_experts = gating_output.size(1);
+#ifdef DEBUG
   TORCH_CHECK(gating_output.size(0) == num_tokens, "Number of tokens mismatch");
   TORCH_CHECK(correction_bias.numel() == num_experts, "Bias shape mismatch");
+#endif
   at::Tensor topk_weights = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kFloat));
   at::Tensor topk_ids = at::empty({num_tokens, topk}, hidden_states.options().dtype(at::kInt));
   float scaling_factor_value = routed_scaling_factor.has_value() ? routed_scaling_factor.value() : 1.0f;
 
   CPU_DISPATCH_FLOATING_TYPES_EXT(st, correction_bias.scalar_type(), "biased_grouped_topk_kernel", [&] {
+#ifdef DEBUG
     TORCH_CHECK(topk == 8, "Unexpected topk: ", topk);
+#endif
     switch (num_experts) {
       case 128:
         LAUNCH_BIASED_GROUPED_TOPK_KERNEL(128, 8);

@@ -34,7 +34,8 @@ void fused_experts_fp_kernel_impl(
     float limit,
     CPUActMethod act_func,
     bool with_bias) {
-  constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_m();
+  constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 1: intermediate_cache0 = hidden_states @ w1
@@ -267,6 +268,7 @@ void shared_expert_fp8_kernel_impl(
     int64_t N,
     int64_t K) {
   constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 1: intermediate_cache0 = hidden_states @ w1

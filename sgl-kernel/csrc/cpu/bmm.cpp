@@ -141,12 +141,14 @@ void bmm_cpu(
 
   // input and out could be non-contiguous
   // weight needs to be contiguous in [OC, IC] order
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(out);
   CHECK_INPUT(mat2);
   CHECK_DIM(3, out);
   CHECK_DIM(3, mat1);
   CHECK_DIM(3, mat2);
+#endif
 
   int64_t B = mat1.size(0);
   int64_t M = mat1.size(1);
@@ -154,16 +156,20 @@ void bmm_cpu(
   int64_t K = mat1.size(2);
 
   const bool use_fp8_w8a16 = scale.has_value();
+#ifdef DEBUG
   TORCH_CHECK(N % 32 == 0, "tinygemm requires N to be 32x.");
+#endif
 
   int64_t mat1_strideB = mat1.stride(0);
   int64_t mat1_strideM = mat1.stride(1);
   int64_t out_strideB = out.stride(0);
   int64_t out_strideM = out.stride(1);
 
+#ifdef DEBUG
   // check shapes
   TORCH_CHECK(mat2.size(0) == B && mat2.size(2) == K, "bmm: mat2 shape mismatch!");
   TORCH_CHECK(out.size(0) == B && out.size(1) == M, "bmm: out shape mismatch!");
+#endif
   if (!use_fp8_w8a16) {
     AT_DISPATCH_REDUCED_FLOATING_TYPES(mat1.scalar_type(), "bmm_kernel_impl", [&] {
       bmm_kernel_impl<scalar_t, scalar_t>(
@@ -183,7 +189,9 @@ void bmm_cpu(
     float scale_val = 0.f;
 
     auto scale_tensor = scale.value();
+#ifdef DEBUG
     TORCH_CHECK(scale_tensor.ndimension() == 0, "bmm: expect scale to be 0-dim tensor.");
+#endif
     scale_val = scale_tensor.item<float>();
 
     bmm_kernel_impl<at::BFloat16, at::Float8_e4m3fn>(

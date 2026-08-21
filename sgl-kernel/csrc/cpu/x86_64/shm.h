@@ -265,7 +265,7 @@ reduce_fp32_buffers(int start_elements, int num_elements, char* to_buffer, char*
 __attribute__((target("avx512bw"))) inline void parallel_memcpy(void* to, void* from, size_t n_bytes) {
   auto aligned_bytes = n_bytes - (n_bytes % VECTOR_LENGTH_IN_BYTES);
   // process aligned part
-#pragma omp parallel for
+// #pragma omp parallel for
   for (size_t i = 0; i < aligned_bytes; i += VECTOR_LENGTH_IN_BYTES) {
     auto val = _mm256_loadu_si256((__m256i*)((char*)from + i));
     _mm256_storeu_si256((__m256i*)((char*)to + i), val);

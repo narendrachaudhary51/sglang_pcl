@@ -380,15 +380,19 @@ INSTANTIATE_TINYGEMM_TEMPLATE(at::BFloat16);
 INSTANTIATE_TINYGEMM_TEMPLATE(at::Half);
 
 std::tuple<at::Tensor, at::Tensor> per_token_quant_int8_cpu(at::Tensor& A) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(A);
   CHECK_DIM(2, A);
+#endif
 
   int64_t M = A.size(0);
   int64_t K = A.size(1);
   int64_t lda = A.stride(0);
 
   const auto st = A.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(st == at::kBFloat16 || st == at::kHalf, "per_token_quant_int8: expect A to be bfloat16 or half.");
+#endif
 
   auto Aq = at::empty({M, K}, A.options().dtype(at::kByte));
   auto As = at::empty({M}, A.options().dtype(at::kFloat));
@@ -398,7 +402,7 @@ std::tuple<at::Tensor, at::Tensor> per_token_quant_int8_cpu(at::Tensor& A) {
     float* __restrict__ As_data = As.data_ptr<float>();
     const scalar_t* __restrict__ A_data = A.data_ptr<scalar_t>();
 
-    at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+    at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
       for (int64_t m = begin; m < end; ++m) {
         quantize_row_int8<scalar_t>(Aq_data + m * K, As_data[m], A_data + m * lda, K);
       }
@@ -426,18 +430,20 @@ at::Tensor int8_scaled_mm_cpu(
     at::ScalarType out_dtype,
     bool is_vnni) {
   auto packed_w = is_vnni ? mat2 : convert_weight_packed(mat2);
-
+#ifdef DEBUG_GEMM
   CHECK_INPUT(mat1);
   CHECK_INPUT(mat2);
   CHECK_INPUT(scales1);
   CHECK_INPUT(scales2);
   CHECK_DIM(2, mat1);
   CHECK_DIM(2, mat2);
+#endif
 
   int64_t M = mat1.size(0);
   int64_t N = mat2.size(0);
   int64_t K = mat1.size(1);
 
+#ifdef DEBUG_GEMM
   // see [NOTE]: s8s8 igemm compensation in avx512-vnni
   CHECK_EQ(mat2.size(1), (int64_t)(is_vnni ? K + sizeof(int32_t) : K));
   CHECK_EQ(scales1.numel(), M);
@@ -448,6 +454,7 @@ at::Tensor int8_scaled_mm_cpu(
   TORCH_CHECK(
       scales1.scalar_type() == at::kFloat && scales2.scalar_type() == at::kFloat,
       "int8_scaled_mm: expect scales to be float32.");
+#endif
 
   auto out = at::empty({M, N}, mat1.options().dtype(out_dtype));
 
@@ -483,18 +490,20 @@ at::Tensor int8_scaled_mm_with_quant(
     at::ScalarType out_dtype,
     bool is_vnni) {
   auto packed_w = is_vnni ? mat2 : convert_weight_packed(mat2);
-
+#ifdef DEBUG_GEMM
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_INPUT(mat2);
   CHECK_INPUT(scales2);
   CHECK_DIM(2, mat1);
   CHECK_DIM(2, mat2);
+#endif
 
   int64_t M = mat1.size(0);
   int64_t N = mat2.size(0);
   int64_t K = mat1.size(1);
   int64_t lda = mat1.stride(0);
 
+#ifdef DEBUG_GEMM
   // see [NOTE]: s8s8 igemm compensation in avx512-vnni
   CHECK_EQ(mat2.size(1), (int64_t)(is_vnni ? K + sizeof(int32_t) : K));
   CHECK_EQ(scales2.numel(), N);
@@ -504,6 +513,7 @@ at::Tensor int8_scaled_mm_with_quant(
   TORCH_CHECK(st == out_dtype, "int8_scaled_mm_with_quant: expect A has same dtype with out_dtype.");
   TORCH_CHECK(mat2.scalar_type() == at::kChar, "int8_scaled_mm_with_quant: expect mat2 to be int8.");
   TORCH_CHECK(scales2.scalar_type() == at::kFloat, "int8_scaled_mm_with_quant: expect scales to be float32.");
+#endif
 
   const int64_t buffer_size = M * K + M * sizeof(float);
   auto buffer = at::empty({buffer_size}, mat1.options().dtype(at::kByte));
@@ -521,7 +531,7 @@ at::Tensor int8_scaled_mm_with_quant(
     float* __restrict__ As_data = (float*)((void*)(Aq_data + M * K));
     const scalar_t* __restrict__ A_data = mat1.data_ptr<scalar_t>();
 
-    at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+    at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
       for (int64_t m = begin; m < end; ++m) {
         quantize_row_int8<scalar_t>(Aq_data + m * K, As_data[m], A_data + m * lda, K);
       }

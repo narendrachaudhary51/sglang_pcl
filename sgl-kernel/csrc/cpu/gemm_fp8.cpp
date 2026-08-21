@@ -1120,24 +1120,30 @@ at::Tensor fp8_scaled_mm_cpu(
     bool is_vnni) {
   auto packed_w = is_vnni ? mat2 : convert_weight_packed(mat2);
 
+#ifdef DEBUG_GEMM
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_INPUT(mat2);
   CHECK_INPUT(scales2);
   TORCH_CHECK(scales2.scalar_type() == at::kFloat, "fp8_scaled_mm_cpu: expect scales2 to be float32.");
+#endif
 
   int64_t M = mat1.size(0);
   int64_t N = mat2.size(0);
   int64_t K = mat2.size(1);
 
+#ifdef DEBUG_GEMM
   CHECK_EQ(mat1.size(1), K);
   CHECK_DIM(2, mat1);
   CHECK_DIM(2, mat2);
 
   TORCH_CHECK(block_size.size() == 2, "fp8_scaled_mm_cpu: expect block_size.size() to be 2.");
+#endif
+
   int64_t block_size_N = block_size[0];
   int64_t block_size_K = block_size[1];
 
   constexpr int64_t BLOCK_N = block_size_n();
+#ifdef DEBUG_GEMM
   TORCH_CHECK(block_size_N % BLOCK_N == 0, "fp8_scaled_mm_cpu: expect block_size_N to be multiples of BLOCK_N");
   TORCH_CHECK(block_size_K == BLOCK_K, "fp8_scaled_mm_cpu: expect block_size_K equals to BLOCK_K");
   CHECK_EQ(scales2.size(0), div_up(N, block_size_N));
@@ -1148,6 +1154,7 @@ at::Tensor fp8_scaled_mm_cpu(
   TORCH_CHECK(st == out_dtype, "fp8_scaled_mm_cpu: expect A has same dtype with out_dtype.");
   TORCH_CHECK(mat2.scalar_type() == at::kFloat8_e4m3fn, "fp8_scaled_mm_cpu: expect mat2 to be fp8_e4m3.");
   TORCH_CHECK(scales2.scalar_type() == at::kFloat, "fp8_scaled_mm_cpu: expect scales to be float32.");
+#endif
   auto out = at::empty({M, N}, mat1.options().dtype(out_dtype));
 
   auto buffer = alloc_thread_buffer(mat1.options(), K);
@@ -1186,11 +1193,11 @@ at::Tensor fp8_scaled_mm_cpu(
 at::Tensor mxfp4_scaled_mm_cpu(
     at::Tensor& mat1, at::Tensor& mat2, at::Tensor& scales2, const std::optional<at::Tensor>& bias, bool is_vnni) {
   auto packed_w = is_vnni ? mat2 : convert_weight_packed(mat2);
-
+#ifdef DEBUG_GEMM
   CHECK_INPUT(mat1);
   CHECK_INPUT(mat2);
   CHECK_INPUT(scales2);
-
+#endif
   int64_t M = mat1.size(0);
   int64_t N = mat2.size(0);
   int64_t K = mat2.size(1) * 2;
@@ -1199,13 +1206,16 @@ at::Tensor mxfp4_scaled_mm_cpu(
   constexpr int64_t group_size = 32;
   constexpr int64_t BLOCK_N = block_size_n();
 
+#ifdef DEBUG_GEMM
   CHECK_EQ(mat1.size(1), K);
   CHECK_EQ(scales2.numel(), N * K >> 5);
-
+#endif
   const auto st = mat1.scalar_type();
+#ifdef DEBUG_GEMM
   TORCH_CHECK(st == at::kBFloat16 || st == at::kHalf, "mxfp4_scaled_mm_cpu: expect A to be bfloat16 or half.");
   TORCH_CHECK(mat2.scalar_type() == at::kByte, "mxfp4_scaled_mm_cpu: expect mat2 to be uint8.");
   TORCH_CHECK(scales2.scalar_type() == at::kByte, "mxfp4_scaled_mm_cpu: expect scales to be uint8.");
+#endif
   auto out = at::empty({M, N}, mat1.options());
 
   auto buffer = alloc_thread_buffer(mat1.options(), K);

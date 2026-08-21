@@ -39,83 +39,131 @@ int moe_align_block_size(
     int num_threads) {
 #define T_INDEX(tt) total_cnts + (tt) * num_experts
 
-  // accumulate count of expert ids locally
-  at::parallel_for(0, numel, 0, [&](int begin, int end) {
-    int tid = at::get_thread_num();
-    int32_t* __restrict__ local_cnts = T_INDEX(tid + 1);
+  // fast path: skip per-thread count rows, cross-thread reduction, and
+  // parallel scatter when the bookkeeping O(num_threads * num_experts)
+  // would dominate the useful work O(numel).
+#ifdef MOE_OPT
+  if (numel < num_threads * num_experts) {
+    int32_t* __restrict__ counts = T_INDEX(0);  // [num_experts]
+    int32_t* __restrict__ cur = T_INDEX(1);     // [num_experts] running write pos
+    std::fill(counts, counts + num_experts, 0);
+    std::fill(cur, cur + num_experts, 0);
 
-    for (int i = begin; i < end; ++i) {
-      local_cnts[topk_ids[i]]++;
+    // 1. count expert ids
+    for (int i = 0; i < numel; ++i) {
+      counts[topk_ids[i]]++;
     }
-  });
 
-  using iVec = at::vec::Vectorized<int32_t>;
-  for (int t = 0; t < num_threads; ++t) {
-    at::vec::map2<int32_t>(
-        [](iVec x, iVec y) { return x + y; }, T_INDEX(t + 1), T_INDEX(t + 1), T_INDEX(t), num_experts);
-  }
-
-  // the last row holds sums of each experts
-  int32_t* total_cnts_t_1 = T_INDEX(num_threads);
-
-  cumsums[0] = 0;
-  for (int e = 0; e < num_experts; ++e) {
-    // accumulate `num_tokens_post_pad`, also as the expert offset
-    cumsums[e + 1] = cumsums[e] + div_up(total_cnts_t_1[e], BLOCK_M) * BLOCK_M;
-
-    for (int k = cumsums[e]; k < cumsums[e + 1]; k += BLOCK_M) {
-      expert_ids[k / BLOCK_M] = e;
-    }
-  }
-  int num_tokens_post_pad = cumsums[num_experts];
-
-  at::parallel_for(0, numel, 0, [&](int begin, int end) {
-    int tid = at::get_thread_num();
-    // thread tid offsets in `total_cnts`
-    int32_t* __restrict__ offsets = T_INDEX(tid);
-
-    for (int i = begin; i < end; ++i) {
-      int32_t expert_id = topk_ids[i];
-      int32_t b_offset = cumsums[expert_id];
-      int32_t t_offset = offsets[expert_id];
-      sorted_ids[b_offset + t_offset] = i;
-      offsets[expert_id]++;
-    }
-  });
-
-  // debug: the offset for thread t_1 should be identical to t_2
-  int32_t* total_cnts_t_2 = T_INDEX(num_threads - 1);
-  for (int e = 0; e < num_experts; ++e) {
-    TORCH_CHECK(total_cnts_t_1[e] == total_cnts_t_2[e]);
-  }
-
-  // padding value for sorted_ids: numel
-  auto sorted_id_size = [=](const int32_t* sorted_ids_ptr) {
-    for (int d = 0; d < BLOCK_M; ++d) {
-      if (sorted_ids_ptr[d] == numel) {
-        return d;
+    // 2. block-aligned prefix sum -> cumsums, fill expert_ids
+    cumsums[0] = 0;
+    for (int e = 0; e < num_experts; ++e) {
+      cumsums[e + 1] = cumsums[e] + div_up(counts[e], BLOCK_M) * BLOCK_M;
+      for (int k = cumsums[e]; k < cumsums[e + 1]; k += BLOCK_M) {
+        expert_ids[k / BLOCK_M] = e;
       }
     }
-    return BLOCK_M;
-  };
+    int num_tokens_post_pad = cumsums[num_experts];
 
-  // offsets holds starting offset for each valida M blocks
-  //   shape : [num_token_blocks + 1]
-  offsets[0] = 0;
-  const int num_token_blocks = num_tokens_post_pad / BLOCK_M;
-  at::parallel_for(0, num_token_blocks, GRAIN_SIZE / BLOCK_M, [&](int begin, int end) {
-    for (int mb = begin; mb < end; ++mb) {
-      offsets[mb + 1] = sorted_id_size(sorted_ids + mb * BLOCK_M);
+    // 3. scatter token ids into sorted order
+    for (int i = 0; i < numel; ++i) {
+      int32_t expert_id = topk_ids[i];
+      sorted_ids[cumsums[expert_id] + cur[expert_id]++] = i;
     }
-  });
-  // TODO: do we need to vecterize this ?
-  for (int mb = 0; mb < num_token_blocks; ++mb) {
-    offsets[mb + 1] += offsets[mb];
-  }
-  // debug: the last value of offsets should be `numel`
-  TORCH_CHECK(offsets[num_token_blocks] == numel);
 
-  return num_tokens_post_pad;
+    // 4. per M-block valid sizes (padding value is `numel`)
+    offsets[0] = 0;
+    const int num_token_blocks = num_tokens_post_pad / BLOCK_M;
+    for (int mb = 0; mb < num_token_blocks; ++mb) {
+      const int32_t* p = sorted_ids + mb * BLOCK_M;
+      int d = 0;
+      while (d < BLOCK_M && p[d] != numel) ++d;
+      offsets[mb + 1] = offsets[mb] + d;
+    }
+    return num_tokens_post_pad;
+
+  } else {
+#endif
+    // accumulate count of expert ids locally
+    at::parallel_for(0, numel, 0, [&](int begin, int end) {
+      int tid = at::get_thread_num();
+      int32_t* __restrict__ local_cnts = T_INDEX(tid + 1);
+
+      for (int i = begin; i < end; ++i) {
+        local_cnts[topk_ids[i]]++;
+      }
+    });
+
+    using iVec = at::vec::Vectorized<int32_t>;
+    // const int n_active = std::min<int>(num_threads, std::max<int>(1, numel));
+    for (int t = 0; t < num_threads; ++t) {
+      at::vec::map2<int32_t>(
+          [](iVec x, iVec y) { return x + y; }, T_INDEX(t + 1), T_INDEX(t + 1), T_INDEX(t), num_experts);
+    }
+
+    // the last row holds sums of each experts
+    int32_t* total_cnts_t_1 = T_INDEX(num_threads);
+    // int32_t* total_cnts_t_1 = T_INDEX(n_active);
+
+    cumsums[0] = 0;
+    for (int e = 0; e < num_experts; ++e) {
+      // accumulate `num_tokens_post_pad`, also as the expert offset
+      cumsums[e + 1] = cumsums[e] + div_up(total_cnts_t_1[e], BLOCK_M) * BLOCK_M;
+
+      for (int k = cumsums[e]; k < cumsums[e + 1]; k += BLOCK_M) {
+        expert_ids[k / BLOCK_M] = e;
+      }
+    }
+    int num_tokens_post_pad = cumsums[num_experts];
+
+    at::parallel_for(0, numel, 0, [&](int begin, int end) {
+      int tid = at::get_thread_num();
+      // thread tid offsets in `total_cnts`
+      int32_t* __restrict__ offsets = T_INDEX(tid);
+
+      for (int i = begin; i < end; ++i) {
+        int32_t expert_id = topk_ids[i];
+        int32_t b_offset = cumsums[expert_id];
+        int32_t t_offset = offsets[expert_id];
+        sorted_ids[b_offset + t_offset] = i;
+        offsets[expert_id]++;
+      }
+    });
+
+    // debug: the offset for thread t_1 should be identical to t_2
+    int32_t* total_cnts_t_2 = T_INDEX(num_threads - 1);
+    for (int e = 0; e < num_experts; ++e) {
+      TORCH_CHECK(total_cnts_t_1[e] == total_cnts_t_2[e]);
+    }
+
+    // padding value for sorted_ids: numel
+    auto sorted_id_size = [=](const int32_t* sorted_ids_ptr) {
+      for (int d = 0; d < BLOCK_M; ++d) {
+        if (sorted_ids_ptr[d] == numel) {
+          return d;
+        }
+      }
+      return BLOCK_M;
+    };
+
+    // offsets holds starting offset for each valida M blocks
+    //   shape : [num_token_blocks + 1]
+    offsets[0] = 0;
+    const int num_token_blocks = num_tokens_post_pad / BLOCK_M;
+    at::parallel_for(0, num_token_blocks, GRAIN_SIZE / BLOCK_M, [&](int begin, int end) {
+      for (int mb = begin; mb < end; ++mb) {
+        offsets[mb + 1] = sorted_id_size(sorted_ids + mb * BLOCK_M);
+      }
+    });
+    // TODO: do we need to vecterize this ?
+    for (int mb = 0; mb < num_token_blocks; ++mb) {
+      offsets[mb + 1] += offsets[mb];
+    }
+    // debug: the last value of offsets should be `numel`
+    TORCH_CHECK(offsets[num_token_blocks] == numel);
+    return num_tokens_post_pad;
+#ifdef MOE_OPT
+  }
+#endif
 }
 
 //   silu :    shape          leading dimension
@@ -517,15 +565,17 @@ void fused_experts_kernel_impl(
     CPUActMethod act_func,
     bool with_bias) {
   // handle 2 tiles per block
-  constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_m();
+  constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 1: intermediate_cache1 = silu(hidden_states @ w1)
   const int64_t MB = div_up(num_tokens_post_pad, BLOCK_M);
   const int64_t NB = div_up(N, BLOCK_N);
-
+#ifdef DEBUG
   // strides for w1: [E, 2N, K]
   TORCH_CHECK(N % BLOCK_N == 0, "Fixme when N is not multiples of ", BLOCK_N);
+#endif
 
   const int64_t stride_e = 2 * N * K;
   const int64_t stride_n = K;
@@ -728,7 +778,7 @@ void fused_experts_kernel_impl(
 
   // stage 3: out = intermediate_cache2.sum(dim=1)
   //   from [M, topk, K] to [M, K]
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       sum_stub(output + m * K, ic2 + m * topk * K, topk, K);
     }
@@ -750,13 +800,15 @@ void shared_expert_kernel_impl(
     int64_t K) {
   // handle 2 tiles per block
   constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 1: intermediate_cache1 = silu(hidden_states @ w1)
   const int64_t MB = div_up(M, BLOCK_M);
   const int64_t NB = div_up(N, BLOCK_N);
-
+#ifdef DEBUG
   TORCH_CHECK(N % BLOCK_N == 0, "Fixme when N is not multiples of ", BLOCK_N);
+#endif
   const int64_t stride_n = K;
 
   const bool use_brgemm = can_use_brgemm<scalar_t>(M);
@@ -977,7 +1029,8 @@ at::Tensor fused_experts_cpu(
   auto packed_w1 = is_vnni ? w1 : convert_weight_packed(w1);
   auto packed_w2 = is_vnni ? w2 : convert_weight_packed(w2);
 
-  constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_m();
+  constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   const auto st = hidden_states.scalar_type();
@@ -985,6 +1038,7 @@ at::Tensor fused_experts_cpu(
   // returns int64 topk_ids; fused_experts_cpu requires int32. Remove the typecast after topk kernel is provided
   auto topk_ids_ = topk_ids.scalar_type() == at::kInt ? topk_ids : topk_ids.to(at::kInt);
 
+#ifdef DEBUG
   CHECK_INPUT(hidden_states);
   CHECK_INPUT(w1);
   CHECK_INPUT(w2);
@@ -1000,13 +1054,15 @@ at::Tensor fused_experts_cpu(
   CHECK_DIM(2, topk_weights);
   CHECK_DIM(2, topk_ids_);
   CHECK_EQ(topk_ids_.scalar_type(), at::kInt);
+#endif
 
   // TODO: support topk_weights to be bf16 or fp16 in the kernel.
   // The topk_weights of llama4 is computed via Llama4MoE:custom_routing_function and is bf16/fp16
   // while the kernel currently only supports it to be float32
   auto topk_weights_ = topk_weights.to(at::kFloat);
+#ifdef DEBUG
   CHECK_EQ(topk_weights_.scalar_type(), at::kFloat);
-
+#endif
   int64_t M = hidden_states.size(0);
   int64_t K = hidden_states.size(1);
   int64_t N = moe_comp_method == CPUQuantMethod::INT4_W4A8 ? w1_scale.value().size(1) * w1_scale.value().size(3) / 2
@@ -1018,6 +1074,7 @@ at::Tensor fused_experts_cpu(
   int64_t packed_K = get_row_size(static_cast<CPUQuantMethod>(moe_comp_method), K);
   int64_t packed_N = get_row_size(static_cast<CPUQuantMethod>(moe_comp_method), N);
 
+#ifdef DEBUG
   // check weight shapes
   CHECK_EQ(w2.size(0), E);
   if (!(moe_comp_method == CPUQuantMethod::INT4_W4A8)) {
@@ -1027,7 +1084,7 @@ at::Tensor fused_experts_cpu(
   }
   // check scales
   check_moe_scales(moe_comp_method, w1_scale, w2_scale, block_size);
-
+#endif
   at::Tensor out_hidden_states = inplace ? hidden_states : at::empty_like(hidden_states);
 
   // NB: worst case is each expert holds a block with remainder of 1
@@ -1112,9 +1169,10 @@ at::Tensor fused_experts_cpu(
 
       auto w1s = w1_scale.value();
       auto w2s = w2_scale.value();
+#ifdef DEBUG
       TORCH_CHECK(w1s.numel() == E * 2 * N);
       TORCH_CHECK(w2s.numel() == E * K);
-
+#endif
       fused_experts_int8_kernel_impl<scalar_t>(
           out_hidden_states.data_ptr<scalar_t>(),
           intermediate_cache1,
@@ -1191,8 +1249,10 @@ at::Tensor fused_experts_cpu(
       constexpr int64_t group_size = 32;
       auto w1s = w1_scale.value();
       auto w2s = w2_scale.value();
+#ifdef DEBUG
       TORCH_CHECK(w1s.numel(), E * 2 * N * K >> 5);
       TORCH_CHECK(w2s.numel(), E * K * N >> 5);
+#endif
       fused_experts_fp_kernel_impl<scalar_t, uint8_t, uint8_t, true>(
           out_hidden_states.data_ptr<scalar_t>(),
           intermediate_cache0,
@@ -1325,18 +1385,24 @@ at::Tensor shared_expert_cpu(
   auto packed_w2 = is_vnni ? w2 : convert_weight_packed(w2);
 
   constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   double routed_scaling_factor_value = 0;
   if (routed_scaling_factor.has_value()) {
+#ifdef DEBUG
     TORCH_CHECK(fused_experts_out.has_value(), "shared_expert_cpu: expect fused_experts_out.");
+#endif
     const auto fused_experts_out_tensor = fused_experts_out.value();
     routed_scaling_factor_value = routed_scaling_factor.value();
+#ifdef DEBUG
     CHECK_INPUT(fused_experts_out_tensor);
     CHECK_EQ(hidden_states.sizes(), fused_experts_out_tensor.sizes());
+#endif
   }
 
   const auto st = hidden_states.scalar_type();
+#ifdef DEBUG
   CHECK_INPUT(hidden_states);
   CHECK_INPUT(w1);
   CHECK_INPUT(w2);
@@ -1344,7 +1410,7 @@ at::Tensor shared_expert_cpu(
   CHECK_DIM(2, w1);
   CHECK_DIM(2, w2);
   CHECK_EQ(hidden_states.scalar_type(), st);
-
+#endif
   int64_t M = hidden_states.size(0);
   int64_t K = hidden_states.size(1);
   int64_t N = w1.size(0) / 2;
@@ -1353,6 +1419,7 @@ at::Tensor shared_expert_cpu(
   int64_t packed_K = get_row_size(K, use_int8_w8a8);
   int64_t packed_N = get_row_size(N, use_int8_w8a8);
 
+#ifdef DEBUG
   // check weight shapes
   CHECK_EQ(w2.size(0), K);
   CHECK_EQ(packed_w1.size(1), packed_K);
@@ -1364,7 +1431,7 @@ at::Tensor shared_expert_cpu(
   } else if (use_fp8_w8a16) {
     check_moe_scales<CPUQuantMethod::FP8_W8A16>(w1_scale, w2_scale, block_size);
   }
-
+#endif
   at::Tensor out_hidden_states = inplace ? hidden_states : at::empty_like(hidden_states);
 
   // unlike triton kernel, we fuse silu with gemm1 so only need 2 intermediate_caches:
@@ -1400,8 +1467,10 @@ at::Tensor shared_expert_cpu(
 
       auto w1s = w1_scale.value();
       auto w2s = w2_scale.value();
+#ifdef DEBUG
       TORCH_CHECK(w1s.numel() == 2 * N);
       TORCH_CHECK(w2s.numel() == K);
+#endif
 
       shared_expert_int8_kernel_impl<scalar_t>(
           out_hidden_states.data_ptr<scalar_t>(),

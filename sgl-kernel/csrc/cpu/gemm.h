@@ -16,6 +16,15 @@ constexpr int block_size_n() {
   return 2 * TILE_N;
 }
 
+// Block size for MoE
+constexpr int block_size_moe_m() {
+#ifdef MOE_OPT
+  return TILE_M / 4;
+#else
+  return 2 * TILE_M;
+#endif
+}
+
 // define threshold using brgemm (intel AMX)
 template <typename T>
 inline bool can_use_brgemm(int M);
@@ -44,7 +53,7 @@ inline bool can_use_brgemm<at::Float8_e4m3fn>(int M) {
 }
 
 // work around compiler internal error
-#define BLOCK_K 4 * TILE_K
+#define BLOCK_K 4*TILE_K
 
 // adjust leading dimension size for K
 template <typename T>

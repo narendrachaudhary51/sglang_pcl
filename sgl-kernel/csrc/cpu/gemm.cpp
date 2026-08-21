@@ -734,21 +734,23 @@ weight_packed_linear(at::Tensor& mat1, at::Tensor& mat2, const std::optional<at:
   if (packed_w.scalar_type() == at::kFloat) {
     use_fma_gemm = true;
   }
-
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_INPUT(mat2);
+#endif
   const int64_t ndim = mat1.ndimension();
   auto input_sizes = mat1.sizes().vec();
   int64_t N = use_fma_gemm ? mat2.size(1) : mat2.size(0);
   int64_t K = use_fma_gemm ? mat1.size(1) : mat2.size(1);
   int64_t M = use_fma_gemm ? mat1.size(0) : mat1.numel() / K;
+#ifdef DEBUG
   CHECK_DIM(2, mat2);
   if (use_fma_gemm) {
     CHECK_DIM(2, mat1);
   } else {
     CHECK_EQ(mat1.size(ndim - 1), K);
   }
-
+#endif
   auto dispatch_type = mat1.scalar_type();
   auto out = at::empty({M, N}, mat1.options());
   // strides
@@ -806,25 +808,30 @@ at::Tensor fused_linear_sigmoid_mul(
     bool is_vnni,
     const at::Tensor& post_mul_mat) {
   auto packed_w = is_vnni ? mat2 : convert_weight_packed(mat2);
+#ifdef DEBUG
   TORCH_CHECK(packed_w.scalar_type() == at::kFloat, "fused_linear_sigmoid_mul requires packed float weight")
-
+#endif
   int64_t M = mat1.size(0);
   int64_t K = mat1.size(1);
   int64_t N = mat2.size(1);
 
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_INPUT(mat2);
   CHECK_DIM(2, mat1);
   CHECK_DIM(2, mat2);
+#endif
 
   int64_t out_strideM = post_mul_mat.size(1);
   int64_t mat1_strideM = mat1.stride(0);
   auto dispatch_type = mat1.scalar_type();
   auto out = at::empty({M, out_strideM}, mat1.options());
 
+#ifdef DEBUG
   TORCH_CHECK(
       N == 1 && out_strideM % 32 == 0,
       "post_mul_mat tensor size(1) should be 32 dividable, and the mat2 OC=1 (Mx1 as linear output shape)")
+#endif
 
   const bool has_bias = bias.has_value();
   const float* bias_data = nullptr;

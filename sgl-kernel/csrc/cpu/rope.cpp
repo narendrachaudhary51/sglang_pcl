@@ -249,7 +249,7 @@ void apply_rotary_pos_emb_kernel_impl(
     }
   };
 
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t token_idx = {0};
     data_index_init(begin, token_idx, num_tokens);
     for (int i = begin; i < end; ++i) {
@@ -354,7 +354,7 @@ void apply_rotary_pos_emb_kernel_impl(
     }
   };
 
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, FAST_GRAIN_SIZE, 0, [&](int64_t begin, int64_t end) {
     int64_t token_idx = {0};
     data_index_init(begin, token_idx, num_tokens);
     for (int i = begin; i < end; ++i) {
@@ -444,7 +444,7 @@ void multimodal_rotary_embedding_neox_2D_kernel_impl(
           qk[out_y] = _q_y * _cos + _q_x * _sin;
         }
       };
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t token_idx = {0};
     data_index_init(begin, token_idx, num_tokens);
     for (int i = begin; i < end; ++i) {
@@ -640,9 +640,12 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
     int64_t head_size,
     at::Tensor& cos_sin_cache,
     bool is_neox) {
+#ifdef DEBUG
   CHECK_DIM(1, positions);
+#endif
   const auto input_dim = query.dim();
   const auto input_dtype = query.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(
       input_dim == 2 || input_dim == 3 || input_dim == 4,
       " Query/Key must be 2D [num_tokens, num_heads*head_size] or 3D [num_tokens, num_heads, head_size] or 4D "
@@ -650,16 +653,18 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
   CHECK_DIM(2, cos_sin_cache);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(query);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(key);
-
+#endif
   int64_t rotary_dim = cos_sin_cache.size(1);
+#ifdef DEBUG
   if (input_dim == 3) {
     // TODO: add support for head_dim != rotary_dim case when input_dim=3
     CHECK_EQ(query.size(-1), rotary_dim);
     // TODO: add support for kv_head != 1
     CHECK_EQ(key.size(1), 1);
   }
-
+#endif
   int64_t num_tokens = positions.numel();
+#ifdef DEBUG
   if (input_dim <= 3) {
     CHECK_EQ(key.size(0), num_tokens);
     CHECK_EQ(query.size(0), num_tokens);
@@ -668,7 +673,7 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
   TORCH_CHECK(positions.scalar_type() == at::kLong, "expect positions to be int64, got ", positions.scalar_type());
   TORCH_CHECK(input_dtype == key.scalar_type(), "query and key must have the same data type");
   TORCH_CHECK(input_dtype == cos_sin_cache.scalar_type(), "query and cos_sin_cache must have the same data type");
-
+#endif
   int64_t num_heads = input_dim == 2 ? query.size(-1) / head_size : query.size(-2);
   int64_t num_kv_heads = input_dim == 2 ? key.size(-1) / head_size : key.size(-2);
   int64_t key_stride_s = key.stride(0);
@@ -693,10 +698,12 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
     key_stride_b = key.stride(0);
     query_stride_s = query.stride(1);
     key_stride_s = key.stride(1);
+#ifdef DEBUG
     CHECK_EQ(batch_size, key.size(0));
     CHECK_EQ(seq_len, key.size(1));
     CHECK_EQ(key.size(0) * key.size(1), num_tokens);
     CHECK_EQ(query.size(0) * query.size(1), num_tokens);
+#endif
   }
 
   AT_DISPATCH_REDUCED_FLOATING_TYPES(input_dtype, "rotary_embedding_cpu", [&] {
@@ -742,8 +749,10 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
       key_out = key;
 
     } else {
+#ifdef DEBUG
       TORCH_CHECK(
           is_neox == false, " Query/Key with 3D [num_tokens, num_heads, head_size] does not support neox rope yet");
+#endif
       // TODO: add neox style support for rope impl with 3D inputs
       rotary_embedding_3D_kernel_impl<scalar_t>(
           query_out.data_ptr<scalar_t>(),
@@ -774,6 +783,7 @@ std::tuple<at::Tensor, at::Tensor> rotary_embedding_cpu(
 // sin: [num_tokens, head_size]
 std::tuple<at::Tensor, at::Tensor>
 apply_rotary_pos_emb_cpu(at::Tensor& query, at::Tensor& key, at::Tensor& cos, at::Tensor& sin) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(query);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(key);
   CHECK_INPUT(cos);
@@ -782,20 +792,29 @@ apply_rotary_pos_emb_cpu(at::Tensor& query, at::Tensor& key, at::Tensor& cos, at
   CHECK_DIM(3, key);
   CHECK_DIM(2, cos);
   CHECK_DIM(2, sin);
+#endif
   const auto input_dtype = query.scalar_type();
   int64_t num_tokens = query.size(0);
+#ifdef DEBUG
   CHECK_EQ(num_tokens, key.size(0));
   CHECK_EQ(num_tokens, cos.size(0));
   CHECK_EQ(num_tokens, sin.size(0));
+#endif
   int64_t num_heads = query.size(1);
+#ifdef DEBUG
   CHECK_EQ(num_heads, key.size(1));
+#endif
   int64_t head_size = query.size(2);
+#ifdef DEBUG
   CHECK_EQ(head_size, key.size(2));
   CHECK_EQ(head_size, cos.size(1));
   CHECK_EQ(head_size, sin.size(1));
+#endif
   int64_t q_stride_s = query.stride(0);
   int64_t k_stride_s = key.stride(0);
+#ifdef DEBUG
   TORCH_CHECK(input_dtype == key.scalar_type(), "query and key must have the same data type");
+#endif
   AT_DISPATCH_REDUCED_FLOATING_TYPES(query.scalar_type(), "apply_rotary_pos_emb_cpu", [&] {
     if (cos.scalar_type() == at::kFloat && sin.scalar_type() == at::kFloat) {
       apply_rotary_pos_emb_kernel_impl<scalar_t>(
@@ -843,31 +862,40 @@ std::tuple<at::Tensor, at::Tensor> multimodal_rotary_embedding_cpu(
     const std::optional<std::vector<int64_t>>& mrope_section,
     bool mrope_interleaved,
     bool is_neox) {
+#ifdef DEBUG
   TORCH_CHECK(positions.dim() == 1 || positions.dim() == 2, "positions must be a 1D or 2D tensor");
   CHECK_DIM(2, query);
   CHECK_DIM(2, key);
   CHECK_DIM(2, cos_sin_cache);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(query);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(key);
+#endif
   int64_t rotary_dim = cos_sin_cache.size(1);
   int64_t num_tokens = positions.size(-1);
+#ifdef DEBUG
   CHECK_EQ(key.size(0), num_tokens);
   CHECK_EQ(query.size(0), num_tokens);
+#endif
   const auto input_dtype = query.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(positions.scalar_type() == at::kLong, "expect positions to be int64, got ", positions.scalar_type());
   TORCH_CHECK(input_dtype == key.scalar_type(), "query and key must have the same data type");
   TORCH_CHECK(input_dtype == cos_sin_cache.scalar_type(), "query and cos_sin_cache must have the same data type");
-
+#endif
   int64_t num_heads = query.size(-1) / head_size;
   int64_t num_kv_heads = key.size(-1) / head_size;
   int64_t key_stride_s = key.stride(0);
   int64_t query_stride_s = query.stride(0);
 
   if (positions.dim() == 2) {
+#ifdef DEBUG
     TORCH_CHECK(mrope_section.has_value(), "mrope_section must be provided when positions is 2D");
+#endif
     auto mrope_section_val = mrope_section.value();
+#ifdef DEBUG
     CHECK_EQ(mrope_section_val.size(), 3);
     CHECK_EQ(positions.size(0), 3);
+#endif
     int64_t mrope_section_t = mrope_section_val[0];
     int64_t mrope_section_h = mrope_section_val[1];
     int64_t mrope_section_w = mrope_section_val[2];

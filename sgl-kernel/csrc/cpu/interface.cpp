@@ -48,7 +48,9 @@ void initialize(int64_t size, int64_t rank) {
 }
 
 void shm_allreduce(torch::Tensor& data, int64_t op) {
+#ifdef DEBUG
   TORCH_CHECK(op == c10d::ReduceOp::SUM, "Only torch.distributed.ReduceOp.SUM is supported");
+#endif
 
   auto numel = data.numel();
   int data_size = numel * data.element_size();

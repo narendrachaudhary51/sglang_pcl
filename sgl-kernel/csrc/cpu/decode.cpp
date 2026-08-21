@@ -217,7 +217,9 @@ struct tinygemm_kernel_nt {
       for (int64_t n = 0; n < BLOCK_N; ++n) {
         float sum = 0.f;
         int64_t b_idx = indices[n];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         for (int64_t k = 0; k < K; ++k) {
           sum += scale * static_cast<float>(A[m * lda + k]) * static_cast<float>(B[b_idx * ldb + k]);
         }
@@ -266,7 +268,9 @@ struct tinygemm_kernel_nt<at::BFloat16, index_t, BLOCK_M, BLOCK_N> {
           _mm_prefetch(B + b_idx_prefetch * ldb + k, _MM_HINT_T0);
         }
         int64_t b_idx = indices[col];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         vb[col] = (__m512bh)(_mm512_loadu_si512(B + b_idx * ldb + k));
       }
       vc[i] = _mm512_dpbf16_ps(vc[i], va, vb[col]);
@@ -282,7 +286,9 @@ struct tinygemm_kernel_nt<at::BFloat16, index_t, BLOCK_M, BLOCK_N> {
       }
       if constexpr (row == 0) {
         int64_t b_idx = indices[col];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         vb[col] = (__m512bh)(_mm512_maskz_loadu_epi16(mask, B + b_idx * ldb + k));
       }
       vc[i] = _mm512_dpbf16_ps(vc[i], va, vb[col]);
@@ -345,7 +351,9 @@ struct tinygemm_kernel_nt<at::Half, index_t, BLOCK_M, BLOCK_N> {
 
       if constexpr (row == 0) {
         int64_t b_idx = indices[col];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         __m512i b16 = _mm512_loadu_si512((__m512i const*)(B + b_idx * ldb + k));
         vb0[col] = CVT_FP16_TO_FP32(_mm512_extracti32x8_epi32(b16, 0));
         vb1[col] = CVT_FP16_TO_FP32(_mm512_extracti32x8_epi32(b16, 1));
@@ -366,7 +374,9 @@ struct tinygemm_kernel_nt<at::Half, index_t, BLOCK_M, BLOCK_N> {
 
       if constexpr (row == 0) {
         int64_t b_idx = indices[col];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         __m512i b16 = _mm512_maskz_loadu_epi16(mask, (const void*)(B + b_idx * ldb + k));
         vb0[col] = CVT_FP16_TO_FP32(_mm512_extracti32x8_epi32(b16, 0));
         vb1[col] = CVT_FP16_TO_FP32(_mm512_extracti32x8_epi32(b16, 1));
@@ -420,7 +430,9 @@ inline void tinygemm_kernel_nn_scalar(
       C[m * ldc + n] *= scale[m];
       for (int64_t k = 0; k < K; ++k) {
         int64_t b_idx = indices[k];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
         C[m * ldc + n] += A[m * lda + k] * static_cast<float>(B[b_idx * ldb + n]);
       }
     }
@@ -498,7 +510,9 @@ struct tinygemm_kernel_nn<at::BFloat16, index_t, BLOCK_M, BLOCK_N> {
           _mm_prefetch(B + b_idx_prefetch * ldb + col * 16, _MM_HINT_T0);
         }
         int64_t b_idx = indices[k];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
 
         // for COLS = 2, 4, 6, 8 use 512 bit load
         // for COLS = 1, 3, 5, 7 use 256 bit load
@@ -579,7 +593,9 @@ struct tinygemm_kernel_nn<at::Half, index_t, BLOCK_M, BLOCK_N> {
           _mm_prefetch(B + b_idx_prefetch * ldb + col * 16, _MM_HINT_T0);
         }
         int64_t b_idx = indices[k];
+#ifdef DEBUG
         TORCH_CHECK(b_idx < max_tokens, "token index out of scope!");
+#endif
 
         // for COLS = 2, 4, 6, 8 use 512 bit load
         // for COLS = 1, 3, 5, 7 use 256 bit load
@@ -956,7 +972,7 @@ void decode_set_kv_buffer(
     int64_t nv_strideN,
     int64_t nv_strideH,
     bool is_mla) {
-  at::parallel_for(0, batches * num_heads_kv, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batches * num_heads_kv, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t bs{0}, head_kv_id{0};
     data_index_init(begin, bs, batches, head_kv_id, num_heads_kv);
 
@@ -1098,9 +1114,10 @@ void decode_attention_kernel_impl(
         kv_offset = seq_len_kv - sliding_window_size;
         seq_len_kv = sliding_window_size;
       }
+#ifdef DEBUG
       TORCH_CHECK(seq_len_kv <= max_context_len, "seq_len_kv out of scope!");
       TORCH_CHECK(req_pool_id < max_num_reqs, "req_pool_id out of scope!");
-
+#endif
       const int64_t SPLIT_SIZE = div_up(seq_len_kv, num_kv_splits);
       const int64_t kv_start = kv_id * SPLIT_SIZE;
       const int64_t kv_end = std::min(kv_start + SPLIT_SIZE, seq_len_kv);
@@ -1230,8 +1247,9 @@ void decode_attention_mla_kernel_impl(
   const int64_t l_stride0 = num_heads * num_kv_splits * (head_size_v + 1);
   const int64_t l_stride1 = num_kv_splits * (head_size_v + 1);
   const int64_t l_stride2 = head_size_v + 1;
-
+#ifdef DEBUG
   TORCH_CHECK(logit_cap == 0.f, "decode MLA: expect no logit_cap.");
+#endif
 
   // partition the heads into blocks for parallel
   const int64_t num_blocks = div_up(num_heads, BLOCK_H);
@@ -1267,8 +1285,10 @@ void decode_attention_mla_kernel_impl(
 
       int64_t seq_len_kv = seq_lens[bs];
       int64_t req_pool_id = req_pool_indices[bs];
+#ifdef DEBUG
       TORCH_CHECK(seq_len_kv <= max_context_len, "seq_len_kv out of scope!");
       TORCH_CHECK(req_pool_id < max_num_reqs, "req_pool_id out of scope!");
+#endif
 
       const int64_t SPLIT_SIZE = div_up(seq_len_kv, num_kv_splits);
       const int64_t kv_start = kv_id * SPLIT_SIZE;
@@ -1465,8 +1485,10 @@ void decode_attention_grouped_kernel_impl(
       int64_t seq_len_kv = is_cross_attn ? encoder_lens[bs] : seq_lens[bs];
       int64_t req_pool_id = req_pool_indices[bs];
       int64_t kv_offset = (has_encoder_lens && (!is_cross_attn)) ? encoder_lens[bs] : 0;
+#ifdef DEBUG
       TORCH_CHECK(seq_len_kv <= max_context_len, "seq_len_kv out of scope!");
       TORCH_CHECK(req_pool_id < max_num_reqs, "req_pool_id out of scope!");
+#endif
       if (sliding_window_size > 0 && seq_len_kv > sliding_window_size) {
         kv_offset = seq_len_kv - sliding_window_size;
         seq_len_kv = sliding_window_size;
@@ -1601,6 +1623,7 @@ void decode_attention_cpu(
     int64_t sliding_window_size,
     std::optional<at::Tensor> encoder_lens,
     std::optional<at::Tensor> sinks) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(query);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(k_buffer);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(v_buffer);
@@ -1608,7 +1631,7 @@ void decode_attention_cpu(
   CHECK_DIM(3, k_buffer);
   CHECK_DIM(3, v_buffer);
   CHECK_DIM(1, loc);
-
+#endif
   int64_t num_seqs = seq_lens.size(0);
   int64_t max_num_reqs = req_to_token.size(0);
   int64_t max_context_len = req_to_token.size(1);
@@ -1620,12 +1643,12 @@ void decode_attention_cpu(
   int64_t head_size_v = v_buffer.size(2);
 
   int64_t num_kv_splits = attn_logits.size(2);
-
+#ifdef DEBUG
   CHECK_EQ(attn_logits.size(0), num_seqs);
   CHECK_EQ(attn_logits.size(1), num_heads);
   CHECK_EQ(attn_logits.size(3), head_size_v + 1);
   CHECK_EQ(attn_logits.scalar_type(), at::kFloat);
-
+#endif
   // strides for query
   int64_t q_strideM = query.stride(0);
   int64_t q_strideH = query.stride(1);
@@ -1638,6 +1661,7 @@ void decode_attention_cpu(
 
   // check index data types
   const auto index_dtype = req_to_token.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(
       index_dtype == at::kInt || index_dtype == at::kLong,
       "decode: expect req_to_token to be int32 or int64, got ",
@@ -1647,7 +1671,7 @@ void decode_attention_cpu(
       req_pool_indices.scalar_type() == at::kLong,
       "decode: expect req_pool_indices to be int64, got ",
       req_pool_indices.scalar_type());
-
+#endif
   // check if we have MLA here
   void* k_buffer_data = k_buffer.data_ptr();
   void* v_buffer_data = v_buffer.data_ptr();
@@ -1669,20 +1693,26 @@ void decode_attention_cpu(
   }
   bool has_sink = sinks.has_value();
   at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, query.options());
+#ifdef DEBUG
   CHECK_DIM(1, sinks_tensor);
   CHECK_EQ(sinks_tensor.size(0), num_heads);
+#endif
   AT_DISPATCH_REDUCED_FLOATING_TYPES(query.scalar_type(), "decode_attention_kernel", [&] {
     AT_DISPATCH_INDEX_TYPES(index_dtype, "decode_attention_indices", [&] {
       if (key.has_value()) {
+#ifdef DEBUG
         TORCH_CHECK(value.has_value(), "key and value should have values at the same time")
         CHECK_EQ(loc.numel(), num_seqs);
+#endif
         auto key_tensor = key.value();
         auto value_tensor = value.value();
+#ifdef DEBUG
         // for MLA, key and value shares the same storage and value could be non-contiguous
         CHECK_LAST_DIM_CONTIGUOUS_INPUT(key_tensor);
         CHECK_LAST_DIM_CONTIGUOUS_INPUT(value_tensor);
         CHECK_DIM(3, key_tensor);
         CHECK_DIM(3, value_tensor);
+#endif
         // strides for new key and value
         int64_t nk_strideN = key_tensor.stride(0);
         int64_t nk_strideH = key_tensor.stride(1);

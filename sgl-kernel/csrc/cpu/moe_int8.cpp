@@ -501,11 +501,12 @@ void fused_experts_int8_kernel_impl(
     int64_t topk,
     int64_t num_tokens_post_pad) {
   // handle 2 tiles per block
-  constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_m();
+  constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 0: quantize input to uint8, [M, K]
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       quantize_row_int8<scalar_t>(Aq_tmp + m * K, As_tmp[m], input + m * K, K);
     }
@@ -514,10 +515,10 @@ void fused_experts_int8_kernel_impl(
   // stage 1: intermediate_cache1 = silu(hidden_states @ w1)
   const int64_t MB = div_up(num_tokens_post_pad, BLOCK_M);
   const int64_t NB = div_up(N, BLOCK_N);
-
+#ifdef DEBUG_MOE
   // strides for w1: [E, 2N, K]
   TORCH_CHECK(N % BLOCK_N == 0, "Fixme when N is not multiples of ", BLOCK_N);
-
+#endif
   // K and N are packed for int8
   const int64_t packed_K = get_row_size<int8_t>(K);
   const int64_t packed_N = get_row_size<int8_t>(N);
@@ -622,7 +623,7 @@ void fused_experts_int8_kernel_impl(
   });
 
   // stage 1.5: quantize ic1 to uint8, [M * topk, N]
-  at::parallel_for(0, M * topk, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M * topk, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       quantize_row_int8<scalar_t>(Aq_tmp + m * N, As_tmp[m], ic1 + m * N, N);
     }
@@ -707,7 +708,7 @@ void fused_experts_int8_kernel_impl(
 
   // stage 3: out = intermediate_cache2.sum(dim=1)
   //   from [M, topk, K] to [M, K]
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       sum_stub(output + m * K, ic2 + m * topk * K, topk, K);
     }
@@ -761,10 +762,11 @@ void shared_expert_int8_kernel_impl(
     int64_t K) {
   // handle 2 tiles per block
   constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
 
   // stage 0: quantize input to uint8, [M, K]
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       quantize_row_int8<scalar_t>(Aq_tmp + m * K, As_tmp[m], input + m * K, K);
     }
@@ -773,9 +775,9 @@ void shared_expert_int8_kernel_impl(
   // stage 1: intermediate_cache1 = silu(hidden_states @ w1)
   const int64_t MB = div_up(M, BLOCK_M);
   const int64_t NB = div_up(N, BLOCK_N);
-
+#ifdef DEBUG_MOE
   TORCH_CHECK(N % BLOCK_N == 0, "Fixme when N is not multiples of ", BLOCK_N);
-
+#endif
   // K and N are packed for int8
   const int64_t packed_K = get_row_size<int8_t>(K);
   const int64_t packed_N = get_row_size<int8_t>(N);
@@ -865,7 +867,7 @@ void shared_expert_int8_kernel_impl(
   });
 
   // stage 1.5: quantize ic1 to uint8, [M * topk, N]
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       quantize_row_int8<scalar_t>(Aq_tmp + m * N, As_tmp[m], ic1 + m * N, N);
     }

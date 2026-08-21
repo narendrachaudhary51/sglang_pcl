@@ -69,7 +69,9 @@ void flash_attn_kernel_impl(
   const int ldb_tmp = std::max(head_size, head_size_v);
 
   const int num_groups = num_heads / num_heads_kv;
+#ifdef DEBUG
   TORCH_CHECK(num_groups * num_heads_kv == num_heads);
+#endif
 
   // number of super locks along M
   int MB = div_up(seqlen_q, BLOCK_M);
@@ -237,7 +239,9 @@ void flash_attn_varlen_kernel_impl(
   for (int32_t bs = 0; bs < batches; ++bs) {
     int32_t seqlen_q = cu_seqlens_q[bs + 1] - cu_seqlens_q[bs];
     int32_t seqlen_k = cu_seqlens_k[bs + 1] - cu_seqlens_k[bs];
+#ifdef DEBUG
     TORCH_CHECK(seqlen_q <= max_seqlen_q && seqlen_k <= max_seqlen_k);
+#endif
 
     int32_t blocks = div_up(seqlen_q, BLOCK_M);
     for (int32_t offset = 0; offset < blocks; ++offset) {
@@ -253,7 +257,9 @@ void flash_attn_varlen_kernel_impl(
   const int ldb_tmp = std::max(head_size, head_size_v);
 
   const int num_groups = num_heads / num_heads_kv;
+#ifdef DEBUG
   TORCH_CHECK(num_groups * num_heads_kv == num_heads);
+#endif
 
   // parallel on [MB, num_heads]
   parallel_for(num_heads * MB, [&](int begin, int end) {
@@ -444,6 +450,7 @@ at::Tensor flash_attn_varlen_func(
     int64_t max_seqlen_q,
     int64_t max_seqlen_k,
     bool causal) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(q);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(k);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(v);
@@ -454,6 +461,7 @@ at::Tensor flash_attn_varlen_func(
   CHECK_INPUT(cu_seqlens_k);
   CHECK_EQ(cu_seqlens_q.scalar_type(), at::kInt);
   CHECK_EQ(cu_seqlens_k.scalar_type(), at::kInt);
+#endif
 
   int num_seqs = cu_seqlens_q.size(0) - 1;
   int num_tokens = q.size(0);
@@ -470,6 +478,7 @@ at::Tensor flash_attn_varlen_func(
   int v_strideN = v.stride(0);
   int v_strideH = v.stride(1);
 
+#ifdef DEBUG
   // check sizes
   CHECK_EQ(k.size(2), head_size);
   CHECK_EQ(v.size(1), num_heads_kv);
@@ -478,6 +487,7 @@ at::Tensor flash_attn_varlen_func(
   // D and DV need to be even as we transpose by 512-bit
   TORCH_CHECK(head_size % 2 == 0, "invalid head_size ", head_size);
   TORCH_CHECK(head_size_v % 2 == 0, "invalid head_size_v ", head_size_v);
+#endif
 
   // softmax scale
   double sm_scale = 1.0 / std::sqrt(static_cast<double>(head_size));

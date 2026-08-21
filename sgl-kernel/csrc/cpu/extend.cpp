@@ -61,7 +61,9 @@ void extend_attention_kernel_impl(
   const int ldb_tmp = std::max(head_size, head_size_v);
 
   const int num_groups = num_heads / num_heads_kv;
+#ifdef DEBUG
   TORCH_CHECK(num_groups * num_heads_kv == num_heads);
+#endif
 
   // number of blocks along M
   int MB = div_up(max_len_extend, BLOCK_M);
@@ -101,6 +103,7 @@ void extend_attention_kernel_impl(
 
       int req_pool_id = req_pool_indices[bs];
       int kv_offset = (has_encoder_lens && (!is_cross_attn)) ? encoder_lens[bs] : 0;
+#ifdef DEBUG
       TORCH_CHECK(seq_len_prefix >= 0, "prefix len < 0!");
       TORCH_CHECK(seq_len <= max_context_len, "seq_len out of scope!");
       TORCH_CHECK(req_pool_id < max_num_reqs, "req_pool_id out of scope!");
@@ -108,6 +111,7 @@ void extend_attention_kernel_impl(
       if (is_prefix_skipped) {
         TORCH_CHECK(seq_len_prefix == 0, "extend attention: expect seq_len_prefix to be 0, got ", seq_len_prefix);
       }
+#endif
 
       // offset and size in MB
       int m = mb * BLOCK_M;
@@ -396,22 +400,26 @@ void extend_attention_cpu(
     int64_t sliding_window_size,
     std::optional<at::Tensor> encoder_lens,
     std::optional<at::Tensor> sinks) {
+#ifdef DEBUG
   if (!is_cross_attn) {
     TORCH_CHECK(
         k_extend_opt.has_value() && v_extend_opt.has_value(),
         "k_extend and v_extend are required for non-cross attention");
   }
+#endif
   // Since k_extend and v_extend are not used for cross attention, they can be initialized as k_buffer and v_buffer
   // here.
   auto k_extend = k_extend_opt.has_value() ? k_extend_opt.value() : k_buffer;
   auto v_extend = v_extend_opt.has_value() ? v_extend_opt.value() : v_buffer;
 
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(q_extend);
   CHECK_INPUT(o_extend);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(k_extend);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(v_extend);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(k_buffer);
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(v_buffer);
+#endif
 
   int num_seqs = seq_lens.size(0);
   int max_num_reqs = req_to_token.size(0);
@@ -437,18 +445,21 @@ void extend_attention_cpu(
   int v_strideN = v_buffer.stride(0);
   int v_strideH = v_buffer.stride(1);
 
+#ifdef DEBUG
   // check sizes
   CHECK_EQ(req_pool_indices.size(0), num_seqs);
   CHECK_EQ(extend_seq_lens.size(0), num_seqs);
   CHECK_EQ(extend_start_loc.size(0), num_seqs);
   CHECK_EQ(v_extend.size(1), num_heads_kv);
   CHECK_EQ(k_buffer.size(1), v_buffer.size(1));
+#endif
 
   // MLA will skip prefix part
   const bool is_prefix_skipped = k_buffer.size(1) != num_heads_kv;
 
   // check index data types
   const auto index_dtype = req_to_token.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(
       index_dtype == at::kInt || index_dtype == at::kLong,
       "extend: expect req_to_token to be int32 or int64, got ",
@@ -465,6 +476,7 @@ void extend_attention_cpu(
   // D and DV need to be 32x as we transpose by 512-bit
   TORCH_CHECK(head_size % 32 == 0, "invalid head_size ", head_size);
   TORCH_CHECK(head_size_v % 32 == 0, "invalid head_size_v ", head_size_v);
+#endif
 
   int num_threads = at::get_num_threads();
   auto buffer = at::empty({}, q_extend.options().dtype(at::kChar));
@@ -478,8 +490,10 @@ void extend_attention_cpu(
   }
   bool has_sink = sinks.has_value();
   at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, q_extend.options());
+#ifdef DEBUG
   CHECK_DIM(1, sinks_tensor);
   CHECK_EQ(sinks_tensor.size(0), num_heads);
+#endif
 
   AT_DISPATCH_REDUCED_FLOATING_TYPES(q_extend.scalar_type(), "extend_attention_kernel", [&] {
     AT_DISPATCH_INDEX_TYPES(index_dtype, "extend_attention_indices", [&] {

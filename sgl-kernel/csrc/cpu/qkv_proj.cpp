@@ -283,7 +283,7 @@ void rms_norm_kernel_impl(
     int64_t N1,
     int64_t stride1,
     float eps = 1e-5) {
-  at::parallel_for(0, M, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, M, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t m = begin; m < end; ++m) {
       scalar_t* x0 = input0 + m * N0;
       scalar_t* x1 = input1 + m * stride1;
@@ -356,7 +356,9 @@ void rotary_emb_kernel_impl(
     int64_t oq_strideB,
     int64_t oq_strideH,
     int64_t ok_strideB) {
+#ifdef DEBUG
   TORCH_CHECK(rotary_dim % 32 == 0, "rotary_dim is not 32x.");
+#endif
   const int64_t rotary_offset = rotary_dim / 2;
 
   // parallel on [num_seqs, num_heads + 1]
@@ -439,6 +441,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
     bool is_vnni,
     std::optional<std::vector<int64_t>> block_size) {
   const auto st = hidden_states.scalar_type();
+#ifdef DEBUG
   CHECK_INPUT(hidden_states);
   CHECK_INPUT(positions);
   CHECK_INPUT(cos_sin_cache);
@@ -455,6 +458,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
 
   // skip contiguous checks for weights, expect prepacked
   TORCH_CHECK(is_vnni, "qkv_proj_with_rope: expect weights are prepacked!");
+#endif
 
   int64_t num_seqs = hidden_states.size(0);
   int64_t hidden_size = hidden_states.size(1);
@@ -466,6 +470,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
   int64_t qk_rope_head_dim = kv_a_proj_weight.size(0) - kv_lora_rank;
   int64_t rotary_dim = cos_sin_cache.size(1);
 
+#ifdef DEBUG
   CHECK_EQ(positions.numel(), num_seqs);
   CHECK_EQ(rotary_dim, qk_rope_head_dim);
   CHECK_EQ(q_a_layernorm_weight.numel(), q_lora_rank);
@@ -488,6 +493,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
     TORCH_CHECK(block_size.has_value(), "missing block_size for fp8 w8a16.");
     TORCH_CHECK(block_size.value().size() == 2, "block_size should be 2D for fp8 w8a16.");
   }
+#endif
   // outputs and temp buffer
   const auto options = hidden_states.options();
   auto q_input = at::empty({num_seqs, num_heads, kv_lora_rank + qk_rope_head_dim}, options);
@@ -502,15 +508,16 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
     if (use_int8_w8a8) {
       auto q_a_proj_s = q_a_proj_scale.value();
       auto kv_a_proj_s = kv_a_proj_scale.value();
+#ifdef DEBUG
       TORCH_CHECK(q_a_proj_s.numel() == q_lora_rank);
       TORCH_CHECK(kv_a_proj_s.numel() == kv_lora_rank + qk_rope_head_dim);
-
+#endif
       auto buffer = at::empty({num_seqs * hidden_size + num_seqs * 4}, options.dtype(at::kByte));
       uint8_t* __restrict__ Aq_data = buffer.data_ptr<uint8_t>();
       float* __restrict__ As_data = (float*)((void*)(Aq_data + num_seqs * hidden_size));
       const scalar_t* __restrict__ A_data = hidden_states.data_ptr<scalar_t>();
 
-      at::parallel_for(0, num_seqs, 0, [&](int64_t begin, int64_t end) {
+      at::parallel_for(0, num_seqs, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
         for (int64_t m = begin; m < end; ++m) {
           quantize_row_int8<scalar_t>(Aq_data + m * hidden_size, As_data[m], A_data + m * hidden_size, hidden_size);
         }
@@ -534,10 +541,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope(
       int64_t block_size_K = block_size.value()[1];
       auto q_a_proj_s = q_a_proj_scale.value();
       auto kv_a_proj_s = kv_a_proj_scale.value();
+#ifdef DEBUG
       CHECK_EQ(q_a_proj_s.size(0), div_up(q_lora_rank, block_size_N));
       CHECK_EQ(q_a_proj_s.size(1), div_up(hidden_size, block_size_K));
       CHECK_EQ(kv_a_proj_s.size(0), div_up(kv_lora_rank + qk_rope_head_dim, block_size_N));
       CHECK_EQ(kv_a_proj_s.size(1), div_up(hidden_size, block_size_K));
+#endif
 
       const int BLOCK_N = block_size_n();
       const int num_threads = at::get_num_threads();
@@ -647,8 +656,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight(
     int64_t kv_lora_rank,
     int64_t qk_rope_head_dim) {
   int64_t hidden_size = hidden_states.size(1);
+#ifdef DEBUG
   CHECK_EQ(qkv_a_proj_weight.size(0), q_lora_rank + kv_lora_rank + qk_rope_head_dim);
   CHECK_EQ(qkv_a_proj_weight.size(1), get_row_size(hidden_size, use_int8_w8a8));
+#endif
 
   std::vector<at::Tensor> weight_chunks =
       at::split(qkv_a_proj_weight, {q_lora_rank, kv_lora_rank + qk_rope_head_dim}, 0);
@@ -658,14 +669,18 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight(
   at::Tensor kv_a_proj_s;
 
   if (use_int8_w8a8) {
+#ifdef DEBUG
     TORCH_CHECK(qkv_a_proj_scale.has_value(), "missing qkv_a_proj_scale for int8 w8a8.");
+#endif
     std::vector<at::Tensor> scale_chunks =
         at::split(qkv_a_proj_scale.value(), {q_lora_rank, kv_lora_rank + qk_rope_head_dim}, 0);
     q_a_proj_s = scale_chunks[0];
     kv_a_proj_s = scale_chunks[1];
   }
   if (use_fp8_w8a16) {
+#ifdef DEBUG
     TORCH_CHECK(qkv_a_proj_scale.has_value(), "missing qkv_a_proj_scale for fp8 w8a16.");
+#endif
     int64_t block_size_N = block_size.value()[0];
     int64_t q_a_proj_s_dim0 = div_up(q_lora_rank, block_size_N);
     int64_t kv_a_proj_s_dim0 = div_up(kv_lora_rank + qk_rope_head_dim, block_size_N);

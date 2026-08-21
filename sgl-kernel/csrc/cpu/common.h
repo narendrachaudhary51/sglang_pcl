@@ -216,8 +216,15 @@ static inline void CHECK_INPUT_SHAPE_DTYPE(const at::Tensor& tensor, const at::I
 //                       this one will do payload balance across 2 dimensions.
 //
 
+#define DEBUG
+// #define MOE_OPT
 // grain size for each thread
 constexpr int GRAIN_SIZE = 1024;
+#ifdef DEBUG
+constexpr int FAST_GRAIN_SIZE = 0;
+#else
+constexpr int FAST_GRAIN_SIZE = 32;
+#endif
 
 template <typename T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
 inline T div_up(T x, T y) {
@@ -304,6 +311,7 @@ inline void parallel_2d(int m, int n, const func_t& f) {
   //
   float r = float(m) / n;
   int nth_m = std::ceil(std::sqrt(r * nth));
+  // int nth_m = std::max(1, (int)std::sqrt(r * nth));
   int nth_n = 1;
   for (; nth_m > 0; --nth_m) {
     nth_n = nth / nth_m;
@@ -311,6 +319,8 @@ inline void parallel_2d(int m, int n, const func_t& f) {
       break;
     }
   }
+  // std::cout << "parallel_2d: m=" << m << ", n=" << n << ", nth=" << nth << ", nth_m=" << nth_m << ", nth_n=" << nth_n
+  //           << std::endl;
 
 #if defined(_OPENMP)
 #pragma omp parallel num_threads(nth)

@@ -48,7 +48,8 @@ void fused_experts_int4_w4a8_kernel_impl(
     int64_t E,
     int64_t topk,
     int64_t num_tokens_post_pad) {
-  constexpr int64_t BLOCK_M = block_size_m();
+  // constexpr int64_t BLOCK_M = block_size_m();
+  constexpr int64_t BLOCK_M = block_size_moe_m();
   constexpr int64_t BLOCK_N = block_size_n();
   int num_threads = at::get_num_threads();
   // int64_t buffer_size_nbytes = M * topk * N * 2

@@ -21,7 +21,7 @@ void l2norm_kernel_impl(
   using fVec = at::vec::Vectorized<float>;
 
   constexpr int kVecSize = bVec::size();
-  at::parallel_for(0, batch_size * seq_len, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batch_size * seq_len, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t bi{0}, si{0};
     data_index_init(begin, bi, batch_size, si, seq_len);
     for (int64_t i = begin; i < end; ++i) {
@@ -94,7 +94,7 @@ void rmsnorm_kernel_impl(
   using fVec = at::vec::Vectorized<float>;
 
   constexpr int kVecSize = bVec::size();
-  at::parallel_for(0, batch_size * seq_len, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batch_size * seq_len, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t bi{0}, si{0};
     data_index_init(begin, bi, batch_size, si, seq_len);
     for (int64_t i = begin; i < end; ++i) {
@@ -251,7 +251,7 @@ void fused_add_rmsnorm_kernel_impl(
   using fVec = at::vec::Vectorized<float>;
 
   constexpr int kVecSize = bVec::size();
-  at::parallel_for(0, batch_size * seq_len, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batch_size * seq_len, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     int64_t bi{0}, si{0};
     data_index_init(begin, bi, batch_size, si, seq_len);
     int tid = at::get_thread_num();
@@ -344,7 +344,7 @@ void fused_rmsnorm_gated_kernel_impl(
   const fVec one = fVec(1.f);
 
   constexpr int kVecSize = bVec::size();
-  at::parallel_for(0, batch_size, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batch_size, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t i = begin; i < end; ++i) {
       // local ptrs
       scalar_t* __restrict__ out_ptr = output + i * hidden_size;
@@ -430,7 +430,7 @@ void fused_add_layernorm_kernel_impl(
   const bool has_residual{residual != nullptr};
   const bool has_bias{bias != nullptr};
   const int64_t parallel_size{batch_size * seq_len};
-  at::parallel_for(0, parallel_size, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, parallel_size, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     float* __restrict__ buffer_ptr = buffer + at::get_thread_num() * hidden_size;
 
     for (int64_t i = begin; i < end; ++i) {
@@ -538,8 +538,10 @@ void fused_add_layernorm_kernel_impl(
 
 // input : {batch_size, hidden_size}
 at::Tensor l2norm_cpu(at::Tensor& input, double eps) {
+#ifdef DEBUG
   CHECK_INPUT(input);
   CHECK_DIM(2, input);
+#endif
   int64_t batch_size = input.size(0);
   int64_t hidden_size = input.size(1);
   at::Tensor output = at::empty_like(input);
@@ -563,12 +565,16 @@ at::Tensor l2norm_cpu(at::Tensor& input, double eps) {
 // input : {batch_size, hidden_size} or {batch_size, seq_len, hidden_size}
 // weight: {hidden_size}
 at::Tensor rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
+#endif
   int64_t inp_dim{input.dim()};
+#ifdef DEBUG
   TORCH_CHECK(inp_dim == 2 || inp_dim == 3, "Expected input dim to be 2 or 3, but got ", inp_dim);
   CHECK_DIM(1, weight);
   CHECK_EQ(input.size(-1), weight.size(0));
+#endif
 
   int64_t batch_size = input.size(0);
   int64_t seq_len = 1;
@@ -609,24 +615,32 @@ at::Tensor rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps) {
 // bias  : {hidden_size}
 at::Tensor
 layernorm_cpu(const at::Tensor& input, const at::Tensor& weight, const std::optional<at::Tensor>& bias, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
+#endif
   int64_t inp_dim{input.dim()};
+#ifdef DEBUG
   TORCH_CHECK(inp_dim == 2 || inp_dim == 3, "Expected input dim to be 2 or 3, but got ", inp_dim);
   CHECK_DIM(1, weight);
   if (bias.has_value()) {
     CHECK_DIM(1, bias.value());
     CHECK_EQ(bias.value().size(0), weight.size(0));
   }
+#endif
 
   int64_t batch_size{input.size(0)}, seq_len{1}, hidden_size{input.size(1)}, input_strideN{input.stride(0)};
   if (inp_dim == 3) {
+#ifdef DEBUG
     CHECK_EQ(input.size(2), weight.size(0));
+#endif
     seq_len = input.size(1);
     hidden_size = input.size(2);
     input_strideN = input.stride(1);
   } else {
+#ifdef DEBUG
     CHECK_EQ(input.size(1), weight.size(0));
+#endif
   }
 
   at::Tensor output = at::empty_like(input);
@@ -651,11 +665,13 @@ layernorm_cpu(const at::Tensor& input, const at::Tensor& weight, const std::opti
 }
 
 at::Tensor gemma_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
   CHECK_DIM(2, input);
   CHECK_DIM(1, weight);
   CHECK_EQ(input.size(1), weight.size(0));
+#endif
   int64_t batch_size = input.size(0);
   int64_t hidden_size = input.size(1);
   at::Tensor output = at::empty_like(input);
@@ -686,12 +702,14 @@ at::Tensor gemma_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps) 
 // input : {batch_size, hidden_size} or {batch_size, num_head, seq_len, head_dim}
 // weight: {hidden_size}
 at::Tensor gemma3_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
   TORCH_CHECK(
       input.dim() == 2 || input.dim() == 4, "gemma3_rmsnorm_cpu: input must be 2D or 4D, got ", input.dim(), "D");
   CHECK_DIM(1, weight);
   CHECK_EQ(input.size(-1), weight.size(0));
+#endif
   int64_t batch_size = input.size(0);
   int64_t hidden_size = weight.size(0);
   at::Tensor output = at::empty_like(input);
@@ -751,12 +769,16 @@ at::Tensor gemma3_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps)
 // input : {batch_size, hidden_size} or {batch_size, seq_len, hidden_size}
 // weight: {hidden_size}
 at::Tensor gemma4_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps, double scale_shift, bool with_scale) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
+#endif
   int64_t inp_dim{input.dim()};
+#ifdef DEBUG
   TORCH_CHECK(inp_dim == 2 || inp_dim == 3, "gemma4_rmsnorm_cpu: expected input dim 2 or 3, got ", inp_dim);
   CHECK_DIM(1, weight);
   CHECK_EQ(input.size(-1), weight.size(0));
+#endif
 
   int64_t hidden_size = input.size(-1);
   at::Tensor output = at::empty_like(input);
@@ -814,6 +836,7 @@ at::Tensor gemma4_rmsnorm_cpu(at::Tensor& input, at::Tensor& weight, double eps,
 // weight: {hidden_size}
 // gate: {batch_size, hidden_size}
 at::Tensor fused_rmsnorm_gated_cpu(at::Tensor& input, at::Tensor& weight, at::Tensor& gate, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(weight);
   CHECK_INPUT(gate);
@@ -821,10 +844,13 @@ at::Tensor fused_rmsnorm_gated_cpu(at::Tensor& input, at::Tensor& weight, at::Te
   CHECK_DIM(1, weight);
   CHECK_DIM(2, gate);
   CHECK_EQ(input.size(1), weight.size(0));
+#endif
   int64_t batch_size = input.size(0);
   int64_t hidden_size = input.size(1);
+#ifdef DEBUG
   CHECK_EQ(input.size(0), gate.size(0));
   CHECK_EQ(input.size(1), gate.size(1));
+#endif
   at::Tensor output = at::empty_like(input);
   int64_t input_strideN = input.stride(0);
 
@@ -846,16 +872,20 @@ at::Tensor fused_rmsnorm_gated_cpu(at::Tensor& input, at::Tensor& weight, at::Te
 // residual: {batch_size, hidden_size} or {batch_size, seq_len, hidden_size}
 // weight  : {hidden_size}
 void fused_add_rmsnorm_cpu(at::Tensor& input, at::Tensor& residual, at::Tensor& weight, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(residual);
   CHECK_INPUT(weight);
+#endif
   int64_t inp_dim{input.dim()}, res_dim{residual.dim()};
+#ifdef DEBUG
   CHECK_EQ(inp_dim, res_dim);
   TORCH_CHECK(inp_dim == 2 || inp_dim == 3, "Expected input dim to be 2 or 3, but got ", inp_dim);
   CHECK_DIM(1, weight);
   CHECK_EQ(input.size(0), residual.size(0));
   CHECK_EQ(input.size(-1), residual.size(-1));
   CHECK_EQ(input.size(-1), weight.size(0));
+#endif
 
   int64_t batch_size = input.size(0);
   int64_t seq_len = 1;
@@ -894,6 +924,7 @@ void fused_add_rmsnorm_cpu(at::Tensor& input, at::Tensor& residual, at::Tensor& 
 // residual: {batch_size, hidden_size}
 // weight  : {hidden_size}
 void gemma_fused_add_rmsnorm_cpu(at::Tensor& input, at::Tensor& residual, at::Tensor& weight, double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(residual);
   CHECK_INPUT(weight);
@@ -903,6 +934,7 @@ void gemma_fused_add_rmsnorm_cpu(at::Tensor& input, at::Tensor& residual, at::Te
   CHECK_EQ(input.size(0), residual.size(0));
   CHECK_EQ(input.size(1), residual.size(1));
   CHECK_EQ(input.size(1), weight.size(0));
+#endif
   int64_t batch_size = input.size(0);
   int64_t hidden_size = input.size(1);
   int64_t input_strideN = input.stride(0);
@@ -941,10 +973,13 @@ at::Tensor fused_add_layernorm_cpu(
     const at::Tensor& weight,
     const std::optional<at::Tensor>& bias,
     double eps) {
+#ifdef DEBUG
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
   CHECK_INPUT(residual);
   CHECK_INPUT(weight);
+#endif
   int64_t inp_dim{input.dim()}, res_dim{residual.dim()};
+#ifdef DEBUG
   CHECK_EQ(inp_dim, res_dim);
   TORCH_CHECK(inp_dim == 2 || inp_dim == 3, "Expected input dim to be 2 or 3, but got ", inp_dim);
   TORCH_CHECK(res_dim == 2 || res_dim == 3, "Expected residual dim to be 2 or 3, but got ", res_dim);
@@ -962,6 +997,7 @@ at::Tensor fused_add_layernorm_cpu(
   } else {
     CHECK_EQ(input.size(1), weight.size(0));
   }
+#endif
 
   int64_t batch_size{input.size(0)}, seq_len{1}, hidden_size{input.size(1)}, input_strideN{input.stride(0)};
   if (inp_dim == 3) {

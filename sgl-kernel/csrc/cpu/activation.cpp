@@ -15,7 +15,7 @@ void act_and_mul_kernel_impl(
   using fVec = at::vec::Vectorized<float>;
 
   constexpr int64_t kVecSize = bVec::size();
-  at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, num_tokens, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t i = begin; i < end; ++i) {
       // local ptrs
       const scalar_t* __restrict__ input_ptr = input + i * 2 * dim;

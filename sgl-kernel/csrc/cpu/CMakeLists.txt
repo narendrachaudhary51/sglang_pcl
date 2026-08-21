@@ -119,12 +119,13 @@ if(MY_ARCH_DIR STREQUAL "x86_64")
     add_compile_options(
         -O3
         -Wno-unknown-pragmas
-        -march=x86-64-v4
-        -mavx512bf16
-        -mavx512vnni
-        -mamx-tile
-        -mamx-bf16
-        -mamx-int8
+        -march=native
+        # -march=x86-64-v4
+        # -mavx512bf16
+        # -mavx512vnni
+        # -mamx-tile
+        # -mamx-bf16
+        # -mamx-int8
         -fopenmp
     )
 else()

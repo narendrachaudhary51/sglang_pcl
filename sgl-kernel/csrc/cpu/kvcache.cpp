@@ -34,7 +34,7 @@ void store_cache_kernel_impl(
     int64_t v_stride,
     int64_t kc_stride,
     int64_t vc_stride) {
-  at::parallel_for(0, batch_size, 0, [&](int64_t begin, int64_t end) {
+  at::parallel_for(0, batch_size, FAST_GRAIN_SIZE, [&](int64_t begin, int64_t end) {
     for (int64_t bs = begin; bs < end; ++bs) {
       const int64_t idx = static_cast<int64_t>(indices[bs]);
       const scalar_t* k_ptr = k + bs * k_stride;
@@ -79,21 +79,25 @@ void store_cache_cpu(
     const at::Tensor& v_cache,
     const at::Tensor& indices,
     std::optional<int64_t> row_dim) {
+#ifdef DEBUG
   CHECK_LAST2_DIM_CONTIGUOUS(k, 3);
   CHECK_LAST2_DIM_CONTIGUOUS(v, 3);
   CHECK_LAST2_DIM_CONTIGUOUS(k_cache, 3);
   CHECK_LAST2_DIM_CONTIGUOUS(v_cache, 3);
   CHECK_INPUT(indices);
+#endif
 
   int64_t batch_size = k.size(0);
   int64_t num_heads = k.size(1);
   int64_t head_size = k.size(2);
   int64_t num_pages = k_cache.size(0);
   int64_t row_dim_value = num_heads * head_size;
+#ifdef DEBUG
   if (row_dim.has_value()) {
     CHECK_EQ(row_dim.value(), row_dim_value);
   }
   CHECK_EQ(indices.size(0), batch_size);
+#endif
 
   // strides: batch dimension (dim 0) stride in elements
   int64_t k_stride = k.stride(0);
@@ -102,11 +106,15 @@ void store_cache_cpu(
   int64_t vc_stride = v_cache.stride(0);
 
   const auto dtype = k.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(
       dtype == v.scalar_type() && dtype == k_cache.scalar_type() && dtype == v_cache.scalar_type(),
       "store_cache_cpu: input tensors must have the same dtype");
+#endif
   const auto index_dtype = indices.scalar_type();
+#ifdef DEBUG
   TORCH_CHECK(index_dtype == at::kLong || index_dtype == at::kInt, "indices must be int64 or int32");
+#endif
 
   // dtype : [bfloat16, float16, uint8] for fp8 KV stored as uint8
   // index_dtype : [int64, int32]
