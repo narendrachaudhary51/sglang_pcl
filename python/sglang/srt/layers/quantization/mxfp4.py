@@ -363,7 +363,7 @@ class Mxfp4Config(QuantizationConfig):
                 fused_mapping=self.packed_modules_mapping,
             ):
                 return UnquantizedLinearMethod()
-            elif _is_hip:
+            elif _is_hip:   #or _is_cpu:
                 return UnquantizedLinearMethod()
         elif isinstance(layer, FusedMoE):
             if self.is_checkpoint_mxfp4_serialized:
@@ -373,6 +373,8 @@ class Mxfp4Config(QuantizationConfig):
         else:
             if self.is_checkpoint_mxfp4_serialized:
                 raise NotImplementedError("Mxfp4 attention layer is not implemented")
+            # # Embedding/lm_head layers are unquantized in mxfp4 checkpoints; fall back.
+            # return None
         return None
 
     def get_scaled_act_names(self) -> List[str]:
