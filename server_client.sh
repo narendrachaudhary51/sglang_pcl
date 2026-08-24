@@ -11,8 +11,8 @@ dataset=${8:-"dsr1_mlperf_dataset"}
 TGT_DIR=${9:-"gpt-oss-120b-GNR-TP1"}
 
 # create a directory for torch inductor and triton compiler
-export TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache/${core_list}
-export TRITON_CACHE_DIR=/tmp/triton_cache/${core_list}
+export TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache/${model}/${core_list}
+export TRITON_CACHE_DIR=/tmp/triton_cache/${model}/${core_list}
 mkdir -p $TORCHINDUCTOR_CACHE_DIR
 mkdir -p $TRITON_CACHE_DIR
 
@@ -21,18 +21,19 @@ export MASTER_PORT="${port}"
 
 export TIKTOKEN_ENCODINGS_BASE=/scratch/nchaudh1/tiktoken_encodings
 
-SGLANG_CPU_OMP_THREADS_BIND=${core_list} python -m sglang.launch_server              \
+PYTHONOPTIMIZE=1 SGLANG_CPU_OMP_THREADS_BIND=${core_list} python -m sglang.launch_server              \
         --model ${model}                                           \
-        --quantization mxfp4                                       \
+        --quantization w8a8_int8                                       \
+        --dtype bfloat16                                          \
         --trust-remote-code                                        \
         --disable-overlap-schedule                                 \
         --device cpu                                               \
         --host ${host}                                             \
         --port ${port}                                             \
         --tp ${TP}                                                 \
-        --max-total-tokens 524288                                  \
+        --max-total-tokens 131072                                  \
         --enable-torch-compile                                     \
-        --torch-compile-max-bs 8  &> ${TGT_DIR}/sglang_server_bs${b}_${dataset}_${core_list}.log &
+        --torch-compile-max-bs 1  &> ${TGT_DIR}/sglang_server_bs${b}_${dataset}_${core_list}.log &
 
 SERVER_PID=$!
 # Wait for the server to become responsive

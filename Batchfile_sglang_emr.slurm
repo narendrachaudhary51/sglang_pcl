@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH -o /data/nfs_home/nchaudh1/sglang_pcl/log_sglang_emr.%j.out
+##SBATCH -o /data/nfs_home/nchaudh1/sglang_pcl/log_sglang_emr.%j.out
 #SBATCH -D /data/nfs_home/nchaudh1/sglang_pcl
-#SBATCH -J sglang
+#SBATCH -J sglang_pcl
 #SBATCH --partition=emr
 #SBATCH --constraint="ddr5600"
 #SBATCH --nodes=1
@@ -13,35 +13,37 @@
 hostname
 
 source /swtools/intel/2025.2.0/setvars.sh --force > /dev/null 2>&1
-source .venv/bin/activate
+source $HOME/sglang_pcl/.venv/bin/activate
 
-export HF_HOME="/scratch/nchaudh1/huggingface"
+# export HF_HOME="/scratch/nchaudh1/huggingface"
+export HF_HOME="/cold_storage/ml_datasets/narendra/huggingface"
 
 export LD_PRELOAD=/data/swtools/intel/2025.2.0/2025.2/lib/libiomp5.so:$LD_PRELOAD
-#export LD_PRELOAD=$HOME/lib/lib/libtcmalloc.so.4:/usr/lib64/libtbbmalloc.so.2:$LD_PRELOAD
+# export LD_PRELOAD=$HOME/lib/lib/libtcmalloc.so.4:/usr/lib64/libtbbmalloc.so.2:$LD_PRELOAD
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/data/nfs_home/nchaudh1/lib/lib
 export LD_LIBRARY_PATH=/data/swtools/intel/2025.2.0/lib:$LD_LIBRARY_PATH
 export SGLANG_USE_CPU_ENGINE=1
 
-export LIBXSMM_ROOT=/data/nfs_home/nchaudh1/libxsmm
-export LD_LIBRARY_PATH=$LIBXSMM_ROOT/lib:$LD_LIBRARY_PATH
+# export LIBXSMM_ROOT=/data/nfs_home/nchaudh1/libxsmm
+# export LD_LIBRARY_PATH=$LIBXSMM_ROOT/lib:$LD_LIBRARY_PATH
 
 export LD_PRELOAD=$HOME/jemalloc/lib/libjemalloc.so:$LD_PRELOAD
-export MALLOC_CONF="oversize_threshold:1,background_thread:true,metadata_thp:auto,dirty_decay_ms:-1,muzzy_decay_ms:-1"
+export MALLOC_CONF="retain:true,lg_tcache_max:64,oversize_threshold:1,background_thread:false,metadata_thp:auto,dirty_decay_ms:-1,muzzy_decay_ms:-1"
 
 export no_proxy="localhost,127.0.0.1"
 
-export SGLANG_CPU_OMP_THREADS_BIND="0-63|64-127"
+# export SGLANG_CPU_OMP_THREADS_BIND="0-63|64-127"
 export OMP_NUM_THREADS=64
 export KMP_AFFINITY=granularity=fine,compact,1,0
 export KMP_BLOCKTIME=50
 export OMP_WAIT_POLICY=ACTIVE
 
-export TGT_DIR=gpt-oss-120b-EMR-TP1-server2
+export TGT_DIR=Qwen3-30B-A3B-INT8-EMR-TP1-server1-base
 mkdir -p $TGT_DIR
 # export SGLANG_CPU_MXFP4_LIBXSMM=1
+# export TRANSFORMERS_OFFLINE=1
 
-for b in 1 2 4 8; do
+for b in 1; do
     # for dataset in gpqa_mlperf_dataset mmlupro_mlperf_dataset livecodebench_mlperf_dataset math500_mlperf_dataset; do
     for dataset in dsr1_mlperf_dataset; do
         echo "-------------------------------------"
@@ -54,9 +56,13 @@ for b in 1 2 4 8; do
         #     num_prompts=100
         # fi
         num_prompts=20
-        model="openai/gpt-oss-120b"
+        # model="FabioTrindade/Qwen3-235B-A22B-W8A8"
+        # model="Qwen/Qwen3-30B-A3B"
+        model="nytopop/Qwen3-30B-A3B.w8a8"
+        # model="Qwen/Qwen3-235B-A22B"
+        # model="aws-prototyping/Qwen3-Coder-30B-A3B-Instruct_MXFP4"
 
-        numactl --membind="0" ./server_client.sh $b $num_prompts "127.0.0.1" 8000 1 "0-63" $model $dataset $TGT_DIR &
+        ./server_client.sh $b $num_prompts "127.0.0.1" 8000 1 "0-63" $model $dataset $TGT_DIR &
         pid1=$!
         # numactl --membind="1" ./server_client.sh $b $num_prompts "127.0.0.1" 8001 1 "64-127" $model $dataset $TGT_DIR &
         # pid2=$!
