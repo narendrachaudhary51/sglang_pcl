@@ -823,6 +823,17 @@ class CPUGraphRunner:
         ), "PPProxyTensors is not supported in CPUGraphRunner yet."
 
         prepared_forward_batch = self.prepare_replay(forward_batch)
+        # stance = (
+        #     torch.compiler.set_stance(skip_guard_eval_unsafe=True)
+        #     if self.enable_torch_compile
+        #     else nullcontext()
+        # )
+        # with stance:
+        #     output = self.graphs[prepared_forward_batch.batch_size](
+        #         prepared_forward_batch.input_ids,
+        #         prepared_forward_batch.positions,
+        #         prepared_forward_batch,
+        #     )
         output = self.graphs[prepared_forward_batch.batch_size](
             prepared_forward_batch.input_ids,
             prepared_forward_batch.positions,
