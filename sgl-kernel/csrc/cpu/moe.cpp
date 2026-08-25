@@ -1362,6 +1362,60 @@ at::Tensor fused_experts_cpu(
   return out_hidden_states;
 }
 
+// C-shim-friendly variant of fused_experts_cpu.
+//
+// Identical semantics to fused_experts_cpu, but exposes block_size as two
+// scalar int? arguments (block_size_n, block_size_k) instead of int[]?.  A
+// custom op whose schema only uses StableIValue-representable types
+// (bool/int/float/device/tensor and optionals thereof) is dispatched by
+// Inductor's cpp_wrapper backend through the fast, GIL-free
+// aoti_torch_call_dispatcher path; an int[]? argument forces the slow
+// custom_op_wrapper Python fallback (GIL acquire + per-arg marshalling) on
+// every call.  fused_experts_cpu is invoked once per MoE layer per decode
+// step, so eliminating that per-call Python overhead is worthwhile.
+at::Tensor fused_experts_cpu_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& w1,
+    at::Tensor& w2,
+    at::Tensor& topk_weights,
+    at::Tensor& topk_ids,
+    bool inplace,
+    int64_t moe_comp_method,
+    const std::optional<at::Tensor>& w1_scale,
+    const std::optional<at::Tensor>& w2_scale,
+    const std::optional<at::Tensor>& w1_zero,
+    const std::optional<at::Tensor>& w2_zero,
+    const std::optional<int64_t> block_size_n,
+    const std::optional<int64_t> block_size_k,
+    const std::optional<at::Tensor>& w1_bias,
+    const std::optional<at::Tensor>& w2_bias,
+    const std::optional<double>& alpha,
+    const std::optional<double>& limit,
+    bool is_vnni) {
+  std::optional<std::vector<int64_t>> block_size;
+  if (block_size_n.has_value() && block_size_k.has_value()) {
+    block_size = std::vector<int64_t>{block_size_n.value(), block_size_k.value()};
+  }
+  return fused_experts_cpu(
+      hidden_states,
+      w1,
+      w2,
+      topk_weights,
+      topk_ids,
+      inplace,
+      moe_comp_method,
+      w1_scale,
+      w2_scale,
+      w1_zero,
+      w2_zero,
+      block_size,
+      w1_bias,
+      w2_bias,
+      alpha,
+      limit,
+      is_vnni);
+}
+
 // shared expert kernel
 //
 // hidden_states: [M, K]
@@ -1527,4 +1581,40 @@ at::Tensor shared_expert_cpu(
     }
   });
   return out_hidden_states;
+}
+
+// C-shim-friendly variant of shared_expert_cpu (block_size int[]? -> two int?
+// scalars).  See fused_experts_cpu_v2 for rationale: keeps the op on Inductor's
+// fast aoti_torch_call_dispatcher path in cpp_wrapper mode.
+at::Tensor shared_expert_cpu_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& w1,
+    at::Tensor& w2,
+    const std::optional<at::Tensor>& fused_experts_out,
+    const std::optional<double> routed_scaling_factor,
+    bool inplace,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    const std::optional<at::Tensor>& w1_scale,
+    const std::optional<at::Tensor>& w2_scale,
+    const std::optional<int64_t> block_size_n,
+    const std::optional<int64_t> block_size_k,
+    bool is_vnni) {
+  std::optional<std::vector<int64_t>> block_size;
+  if (block_size_n.has_value() && block_size_k.has_value()) {
+    block_size = std::vector<int64_t>{block_size_n.value(), block_size_k.value()};
+  }
+  return shared_expert_cpu(
+      hidden_states,
+      w1,
+      w2,
+      fused_experts_out,
+      routed_scaling_factor,
+      inplace,
+      use_int8_w8a8,
+      use_fp8_w8a16,
+      w1_scale,
+      w2_scale,
+      block_size,
+      is_vnni);
 }

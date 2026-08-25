@@ -1056,7 +1056,12 @@ class DeepseekV2MoE(nn.Module):
         # [Note] inplace should be False in fused_experts.
         # If inplace is True in fused_experts (self.experts), hidden_states will be changed after fused_experts
         # While hidden_states is still needed in shared_expert.
-        final_hidden_states = torch.ops.sgl_kernel.shared_expert_cpu(
+        _shared_experts_block_size = (
+            self.shared_experts_weight_block_size
+            if self.shared_experts_is_fp8
+            else None
+        )
+        final_hidden_states = torch.ops.sgl_kernel.shared_expert_cpu_v2(
             hidden_states,
             self.shared_experts.gate_up_proj.weight,
             self.shared_experts.down_proj.weight,
@@ -1084,10 +1089,15 @@ class DeepseekV2MoE(nn.Module):
                 )
             ),  # w2_scale
             (
-                self.shared_experts_weight_block_size
-                if self.shared_experts_is_fp8
+                _shared_experts_block_size[0]
+                if _shared_experts_block_size is not None
                 else None
-            ),  # block_size
+            ),  # block_size_n
+            (
+                _shared_experts_block_size[1]
+                if _shared_experts_block_size is not None
+                else None
+            ),  # block_size_k
             True,  # is_vnni
         )
         if self.tp_size > 1 and not should_allreduce_fusion:

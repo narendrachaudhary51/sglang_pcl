@@ -240,6 +240,25 @@ at::Tensor fused_experts_cpu(
     const std::optional<double>& alpha,
     const std::optional<double>& limit,
     bool is_vnni);
+at::Tensor fused_experts_cpu_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& w1,
+    at::Tensor& w2,
+    at::Tensor& topk_weights,
+    at::Tensor& topk_ids,
+    bool inplace,
+    int64_t moe_comp_method,
+    const std::optional<at::Tensor>& w1_scale,
+    const std::optional<at::Tensor>& w2_scale,
+    const std::optional<at::Tensor>& w1_zero,
+    const std::optional<at::Tensor>& w2_zero,
+    const std::optional<int64_t> block_size_n,
+    const std::optional<int64_t> block_size_k,
+    const std::optional<at::Tensor>& w1_bias,
+    const std::optional<at::Tensor>& w2_bias,
+    const std::optional<double>& alpha,
+    const std::optional<double>& limit,
+    bool is_vnni);
 at::Tensor shared_expert_cpu(
     at::Tensor& hidden_states,
     at::Tensor& w1,
@@ -252,6 +271,20 @@ at::Tensor shared_expert_cpu(
     const std::optional<at::Tensor>& w1_scale,
     const std::optional<at::Tensor>& w2_scale,
     const std::optional<std::vector<int64_t>> block_size,
+    bool is_vnni);
+at::Tensor shared_expert_cpu_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& w1,
+    at::Tensor& w2,
+    const std::optional<at::Tensor>& fused_experts_out,
+    const std::optional<double> routed_scaling_factor,
+    bool inplace,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    const std::optional<at::Tensor>& w1_scale,
+    const std::optional<at::Tensor>& w2_scale,
+    const std::optional<int64_t> block_size_n,
+    const std::optional<int64_t> block_size_k,
     bool is_vnni);
 
 // weight absorption
@@ -292,6 +325,50 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight(
     std::optional<at::Tensor> w_scale,
     bool is_vnni,
     std::optional<std::vector<int64_t>> block_size,
+    int64_t q_lora_rank,
+    int64_t kv_lora_rank,
+    int64_t qk_rope_head_dim);
+
+// C-shim-friendly variants (block_size int[]? -> two int? scalars).
+std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& q_a_proj_weight,
+    at::Tensor& q_b_proj_weight,
+    at::Tensor& kv_a_proj_weight,
+    at::Tensor& w_kc,
+    at::Tensor& q_a_layernorm_weight,
+    at::Tensor& kv_a_layernorm_weight,
+    at::Tensor& positions,
+    at::Tensor& cos_sin_cache,
+    double eps,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    std::optional<at::Tensor> q_a_proj_scale,
+    std::optional<at::Tensor> q_b_proj_scale,
+    std::optional<at::Tensor> kv_a_proj_scale,
+    std::optional<at::Tensor> w_scale,
+    bool is_vnni,
+    std::optional<int64_t> block_size_n,
+    std::optional<int64_t> block_size_k);
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& qkv_a_proj_weight,
+    at::Tensor& q_b_proj_weight,
+    at::Tensor& w_kc,
+    at::Tensor& q_a_layernorm_weight,
+    at::Tensor& kv_a_layernorm_weight,
+    at::Tensor& positions,
+    at::Tensor& cos_sin_cache,
+    double eps,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    std::optional<at::Tensor> qkv_a_proj_scale,
+    std::optional<at::Tensor> q_b_proj_scale,
+    std::optional<at::Tensor> w_scale,
+    bool is_vnni,
+    std::optional<int64_t> block_size_n,
+    std::optional<int64_t> block_size_k,
     int64_t q_lora_rank,
     int64_t kv_lora_rank,
     int64_t qk_rope_head_dim);
@@ -595,6 +672,15 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "Tensor? w1_zero, Tensor? w2_zero, int[]? block_size, Tensor? w1_bias, Tensor? w2_bias, float? alpha, float? "
       "limit, bool is_vnni) -> Tensor");
   m.impl("fused_experts_cpu", torch::kCPU, &fused_experts_cpu);
+  // C-shim-friendly variant: block_size split into two int? scalars so the op
+  // is dispatched through Inductor's fast aoti_torch_call_dispatcher path
+  // (int[]? would force the slow custom_op_wrapper Python fallback per call).
+  m.def(
+      "fused_experts_cpu_v2(Tensor hidden_states, Tensor w1, Tensor w2, Tensor topk_weights, Tensor topk_ids, bool "
+      "inplace, int moe_comp_method, Tensor? w1_scale, Tensor? w2_scale, "
+      "Tensor? w1_zero, Tensor? w2_zero, int? block_size_n, int? block_size_k, Tensor? w1_bias, Tensor? w2_bias, "
+      "float? alpha, float? limit, bool is_vnni) -> Tensor");
+  m.impl("fused_experts_cpu_v2", torch::kCPU, &fused_experts_cpu_v2);
   // weight absorption
   m.def(
       "qkv_proj_with_rope(Tensor hidden_states, Tensor q_a_proj_weight, Tensor q_b_proj_weight, Tensor "
@@ -603,6 +689,14 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "q_b_proj_scale, Tensor? kv_a_proj_scale, Tensor? w_scale, "
       "bool is_vnni, int[]? block_size) -> (Tensor, Tensor, Tensor)");
   m.impl("qkv_proj_with_rope", torch::kCPU, &qkv_proj_with_rope);
+  // C-shim-friendly variant (block_size int[]? -> two int? scalars).
+  m.def(
+      "qkv_proj_with_rope_v2(Tensor hidden_states, Tensor q_a_proj_weight, Tensor q_b_proj_weight, Tensor "
+      "kv_a_proj_weight, Tensor w_kc, Tensor q_a_layernorm_weight, Tensor kv_a_layernorm_weight, Tensor positions, "
+      "Tensor cos_sin_cache, float eps, bool use_int8_w8a8, bool use_fp8_w8a16, Tensor? q_a_proj_scale, Tensor? "
+      "q_b_proj_scale, Tensor? kv_a_proj_scale, Tensor? w_scale, "
+      "bool is_vnni, int? block_size_n, int? block_size_k) -> (Tensor, Tensor, Tensor)");
+  m.impl("qkv_proj_with_rope_v2", torch::kCPU, &qkv_proj_with_rope_v2);
   m.def(
       "qkv_proj_with_rope_fused_weight(Tensor hidden_states, Tensor qkv_a_proj_weight, Tensor q_b_proj_weight, "
       "Tensor w_kc, Tensor q_a_layernorm_weight, Tensor kv_a_layernorm_weight, Tensor positions, "
@@ -611,6 +705,15 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "bool is_vnni, int[]? block_size, int q_lora_rank, int kv_lora_rank,"
       "int qk_rope_head_dim) -> (Tensor, Tensor, Tensor)");
   m.impl("qkv_proj_with_rope_fused_weight", torch::kCPU, &qkv_proj_with_rope_fused_weight);
+  // C-shim-friendly variant (block_size int[]? -> two int? scalars).
+  m.def(
+      "qkv_proj_with_rope_fused_weight_v2(Tensor hidden_states, Tensor qkv_a_proj_weight, Tensor q_b_proj_weight, "
+      "Tensor w_kc, Tensor q_a_layernorm_weight, Tensor kv_a_layernorm_weight, Tensor positions, "
+      "Tensor cos_sin_cache, float eps, bool use_int8_w8a8, bool use_fp8_w8a16, Tensor? qkv_a_proj_scale, Tensor? "
+      "q_b_proj_scale, Tensor? w_scale, "
+      "bool is_vnni, int? block_size_n, int? block_size_k, int q_lora_rank, int kv_lora_rank, "
+      "int qk_rope_head_dim) -> (Tensor, Tensor, Tensor)");
+  m.impl("qkv_proj_with_rope_fused_weight_v2", torch::kCPU, &qkv_proj_with_rope_fused_weight_v2);
 
   // shared expert
   m.def(
@@ -618,6 +721,12 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "routed_scaling_factor, bool inplace, bool use_int8_w8a8, bool use_fp8_w8a16, Tensor? w1_scale, Tensor? "
       "w2_scale, int[]? block_size, bool is_vnni) -> Tensor");
   m.impl("shared_expert_cpu", torch::kCPU, &shared_expert_cpu);
+  // C-shim-friendly variant (block_size int[]? -> two int? scalars).
+  m.def(
+      "shared_expert_cpu_v2(Tensor hidden_states, Tensor w1, Tensor w2, Tensor? fused_experts_out, float? "
+      "routed_scaling_factor, bool inplace, bool use_int8_w8a8, bool use_fp8_w8a16, Tensor? w1_scale, Tensor? "
+      "w2_scale, int? block_size_n, int? block_size_k, bool is_vnni) -> Tensor");
+  m.impl("shared_expert_cpu_v2", torch::kCPU, &shared_expert_cpu_v2);
 
   // causal conv1d
   m.def("causal_conv1d_weight_pack(Tensor weight) -> Tensor");

@@ -362,7 +362,7 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
             x, topk_weights = apply_topk_weights_cpu(
                 self.moe_runner_config.apply_router_weight_on_input, topk_weights, x
             )
-            output = torch.ops.sgl_kernel.fused_experts_cpu(
+            output = torch.ops.sgl_kernel.fused_experts_cpu_v2(
                 x,
                 layer.w13_weight,
                 layer.w2_weight,
@@ -374,7 +374,8 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
                 layer.w2_weight_scale,  # w2_scale
                 None,  # w1_zp
                 None,  # w2_zp
-                None,  # block_size
+                None,  # block_size_n
+                None,  # block_size_k
                 None,  # w1 bias
                 None,  # w3 bias
                 None,  # alpha

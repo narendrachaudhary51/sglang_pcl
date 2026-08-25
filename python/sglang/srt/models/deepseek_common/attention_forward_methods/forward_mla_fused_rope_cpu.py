@@ -70,7 +70,7 @@ class DeepseekMLACpuForwardMixin:
         ), "forward_absorb_fused_mla_rope_cpu_prepare requires q_lora_rank is not None and use_intel_amx_backend"
 
         q_input, k_input, v_input = (
-            torch.ops.sgl_kernel.qkv_proj_with_rope_fused_weight(
+            torch.ops.sgl_kernel.qkv_proj_with_rope_fused_weight_v2(
                 hidden_states,
                 self.fused_qkv_a_proj_with_mqa.weight,
                 self.q_b_proj.weight,
@@ -102,7 +102,16 @@ class DeepseekMLACpuForwardMixin:
                 ),
                 self.w_scale if self.qkv_proj_with_rope_is_fp8 else None,
                 True,  # is_vnni
-                self.weight_block_size,
+                (
+                    self.weight_block_size[0]
+                    if self.weight_block_size is not None
+                    else None
+                ),  # block_size_n
+                (
+                    self.weight_block_size[1]
+                    if self.weight_block_size is not None
+                    else None
+                ),  # block_size_k
                 self.q_lora_rank,
                 self.kv_lora_rank,
                 self.qk_rope_head_dim,

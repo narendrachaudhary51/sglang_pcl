@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import bisect
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import psutil
@@ -86,6 +86,13 @@ def set_torch_compile_config():
 
     torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
     torch._inductor.config.freezing = True
+    # Generate a C++ (instead of Python) wrapper for the compiled graph. This
+    # removes per-op Python dispatch overhead when replaying the decode graph,
+    # which is a meaningful fraction of CPU decode step time across many layers.
+    torch._inductor.config.cpp_wrapper = True
+    # Fuse sibling linear layers that share the same input into a single GEMM,
+    # reducing kernel-launch/dispatch count in the compiled decode graph.
+    torch._inductor.config.cpp.enable_concat_linear = True
     torch._dynamo.config.accumulated_cache_size_limit = 1024
     if hasattr(torch._dynamo.config, "cache_size_limit"):
         torch._dynamo.config.cache_size_limit = 1024
@@ -134,6 +141,8 @@ def register_fake_ops():
         "rmsnorm_cpu",
         "l2norm_cpu",
         "fused_experts_cpu",
+        "fused_experts_cpu_v2",
+        "shared_expert_cpu_v2",
         "fused_rmsnorm_gated_cpu",
         "shared_expert_cpu",
         "causal_conv1d_update_cpu",
@@ -166,6 +175,49 @@ def register_fake_ops():
         kv_a_proj_scale,
         is_vnni,
         block_size,
+    ):
+        num_seqs = hidden_states.shape[0]
+        num_heads = w_kc.shape[0]
+        kv_lora_rank = w_kc.shape[1]
+        qk_rope_head_dim = kv_a_proj_weight.shape[0] - kv_lora_rank
+        q_input = torch.empty(
+            num_seqs,
+            num_heads,
+            kv_lora_rank + qk_rope_head_dim,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        k_input = torch.empty(
+            num_seqs,
+            1,
+            kv_lora_rank + qk_rope_head_dim,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        v_input = k_input.narrow(-1, 0, kv_lora_rank)
+        return q_input, k_input, v_input
+
+    @torch.library.register_fake("sgl_kernel::qkv_proj_with_rope_v2")
+    def _(
+        hidden_states,
+        q_a_proj_weight,
+        q_b_proj_weight,
+        kv_a_proj_weight,
+        w_kc,
+        q_a_layernorm_weight,
+        kv_a_layernorm_weight,
+        positions,
+        cos_sin_cache,
+        eps,
+        use_int8_w8a8,
+        use_fp8_w8a16,
+        q_a_proj_scale,
+        q_b_proj_scale,
+        kv_a_proj_scale,
+        w_scale,
+        is_vnni,
+        block_size_n,
+        block_size_k,
     ):
         num_seqs = hidden_states.shape[0]
         num_heads = w_kc.shape[0]
@@ -235,6 +287,53 @@ def register_fake_ops():
         kv_lora_rank = w_kc.shape[1]
         weight_chunks = torch.split(
             q_a_proj_weight, [q_lora_rank, kv_lora_rank + qk_rope_head_dim], dim=0
+        )
+        qk_rope_head_dim = weight_chunks[1].shape[0] - kv_lora_rank
+        q_input = torch.empty(
+            num_seqs,
+            num_heads,
+            kv_lora_rank + qk_rope_head_dim,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        k_input = torch.empty(
+            num_seqs,
+            1,
+            kv_lora_rank + qk_rope_head_dim,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        v_input = k_input.narrow(-1, 0, kv_lora_rank)
+        return q_input, k_input, v_input
+
+    @torch.library.register_fake("sgl_kernel::qkv_proj_with_rope_fused_weight_v2")
+    def _(
+        hidden_states,
+        qkv_a_proj_weight,
+        q_b_proj_weight,
+        w_kc,
+        q_a_layernorm_weight,
+        kv_a_layernorm_weight,
+        positions,
+        cos_sin_cache,
+        eps,
+        use_int8_w8a8,
+        use_fp8_w8a16,
+        qkv_a_proj_scale,
+        q_b_proj_scale,
+        w_scale,
+        is_vnni,
+        block_size_n,
+        block_size_k,
+        q_lora_rank,
+        kv_lora_rank,
+        qk_rope_head_dim,
+    ):
+        num_seqs = hidden_states.shape[0]
+        num_heads = w_kc.shape[0]
+        kv_lora_rank = w_kc.shape[1]
+        weight_chunks = torch.split(
+            qkv_a_proj_weight, [q_lora_rank, kv_lora_rank + qk_rope_head_dim], dim=0
         )
         qk_rope_head_dim = weight_chunks[1].shape[0] - kv_lora_rank
         q_input = torch.empty(
@@ -823,22 +922,17 @@ class CPUGraphRunner:
         ), "PPProxyTensors is not supported in CPUGraphRunner yet."
 
         prepared_forward_batch = self.prepare_replay(forward_batch)
-        # stance = (
-        #     torch.compiler.set_stance(skip_guard_eval_unsafe=True)
-        #     if self.enable_torch_compile
-        #     else nullcontext()
-        # )
-        # with stance:
-        #     output = self.graphs[prepared_forward_batch.batch_size](
-        #         prepared_forward_batch.input_ids,
-        #         prepared_forward_batch.positions,
-        #         prepared_forward_batch,
-        #     )
-        output = self.graphs[prepared_forward_batch.batch_size](
-            prepared_forward_batch.input_ids,
-            prepared_forward_batch.positions,
-            prepared_forward_batch,
+        stance = (
+            torch.compiler.set_stance(skip_guard_eval_unsafe=True)
+            if self.enable_torch_compile
+            else nullcontext()
         )
+        with stance:
+            output = self.graphs[prepared_forward_batch.batch_size](
+                prepared_forward_batch.input_ids,
+                prepared_forward_batch.positions,
+                prepared_forward_batch,
+            )
         if forward_batch.batch_size in self.graphs:
             return output
 

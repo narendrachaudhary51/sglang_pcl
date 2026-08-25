@@ -709,3 +709,97 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight(
       is_vnni,
       block_size);
 }
+
+// C-shim-friendly variants of the qkv_proj_with_rope ops (block_size int[]? ->
+// two int? scalars).  See fused_experts_cpu_v2 for rationale.
+std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& q_a_proj_weight,
+    at::Tensor& q_b_proj_weight,
+    at::Tensor& kv_a_proj_weight,
+    at::Tensor& w_kc,
+    at::Tensor& q_a_layernorm_weight,
+    at::Tensor& kv_a_layernorm_weight,
+    at::Tensor& positions,
+    at::Tensor& cos_sin_cache,
+    double eps,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    std::optional<at::Tensor> q_a_proj_scale,
+    std::optional<at::Tensor> q_b_proj_scale,
+    std::optional<at::Tensor> kv_a_proj_scale,
+    std::optional<at::Tensor> w_scale,
+    bool is_vnni,
+    std::optional<int64_t> block_size_n,
+    std::optional<int64_t> block_size_k) {
+  std::optional<std::vector<int64_t>> block_size;
+  if (block_size_n.has_value() && block_size_k.has_value()) {
+    block_size = std::vector<int64_t>{block_size_n.value(), block_size_k.value()};
+  }
+  return qkv_proj_with_rope(
+      hidden_states,
+      q_a_proj_weight,
+      q_b_proj_weight,
+      kv_a_proj_weight,
+      w_kc,
+      q_a_layernorm_weight,
+      kv_a_layernorm_weight,
+      positions,
+      cos_sin_cache,
+      eps,
+      use_int8_w8a8,
+      use_fp8_w8a16,
+      q_a_proj_scale,
+      q_b_proj_scale,
+      kv_a_proj_scale,
+      w_scale,
+      is_vnni,
+      block_size);
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> qkv_proj_with_rope_fused_weight_v2(
+    at::Tensor& hidden_states,
+    at::Tensor& qkv_a_proj_weight,
+    at::Tensor& q_b_proj_weight,
+    at::Tensor& w_kc,
+    at::Tensor& q_a_layernorm_weight,
+    at::Tensor& kv_a_layernorm_weight,
+    at::Tensor& positions,
+    at::Tensor& cos_sin_cache,
+    double eps,
+    bool use_int8_w8a8,
+    bool use_fp8_w8a16,
+    std::optional<at::Tensor> qkv_a_proj_scale,
+    std::optional<at::Tensor> q_b_proj_scale,
+    std::optional<at::Tensor> w_scale,
+    bool is_vnni,
+    std::optional<int64_t> block_size_n,
+    std::optional<int64_t> block_size_k,
+    int64_t q_lora_rank,
+    int64_t kv_lora_rank,
+    int64_t qk_rope_head_dim) {
+  std::optional<std::vector<int64_t>> block_size;
+  if (block_size_n.has_value() && block_size_k.has_value()) {
+    block_size = std::vector<int64_t>{block_size_n.value(), block_size_k.value()};
+  }
+  return qkv_proj_with_rope_fused_weight(
+      hidden_states,
+      qkv_a_proj_weight,
+      q_b_proj_weight,
+      w_kc,
+      q_a_layernorm_weight,
+      kv_a_layernorm_weight,
+      positions,
+      cos_sin_cache,
+      eps,
+      use_int8_w8a8,
+      use_fp8_w8a16,
+      qkv_a_proj_scale,
+      q_b_proj_scale,
+      w_scale,
+      is_vnni,
+      block_size,
+      q_lora_rank,
+      kv_lora_rank,
+      qk_rope_head_dim);
+}

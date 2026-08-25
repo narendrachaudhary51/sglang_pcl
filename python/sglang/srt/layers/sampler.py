@@ -477,6 +477,28 @@ def top_k_top_p_min_p_sampling_from_probs_torch(
     When sampling_seed is not None, deterministic inference will be enabled, it will sample
     with the sampling_seed of each request.
     """
+    # Fast path: when top_k is bounded, top_k already caps the kept set to at most
+    # max_top_k entries, so top_k/top_p/min_p filtering only ever touches the largest
+    # max_top_k probabilities. Selecting them with topk avoids a full descending sort
+    # over the whole vocabulary (~150k on CPU) every decode step, and is numerically
+    # equivalent to the full-sort path below.
+    vocab_size = probs.shape[-1]
+    max_top_k = int(top_ks.max().item())
+    if sampling_seed is None and 0 < max_top_k < vocab_size:
+        probs_sort, probs_idx = torch.topk(probs, max_top_k, dim=-1)
+        probs_sum = torch.cumsum(probs_sort, dim=-1)
+        probs_sort[
+            torch.arange(0, max_top_k, device=probs.device).view(1, -1)
+            >= top_ks.view(-1, 1)
+        ] = 0.0
+        probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
+        if need_min_p_sampling:
+            min_p_thresholds = probs_sort[:, 0] * min_ps
+            probs_sort[probs_sort < min_p_thresholds.view(-1, 1)] = 0.0
+        sampled_index = torch.multinomial(probs_sort, num_samples=1)
+        probs_idx = probs_idx.to(torch.int32)
+        return torch.gather(probs_idx, dim=1, index=sampled_index).view(-1)
+
     probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
     probs_sort[
